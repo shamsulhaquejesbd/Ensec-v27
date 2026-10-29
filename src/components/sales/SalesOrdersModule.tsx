@@ -502,24 +502,7 @@ export const SalesOrdersModule: React.FC<SalesOrdersModuleProps> = ({ onNavigate
         </div>
 
         <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
-          {onNavigateToRegistry && (
-            <button
-              type="button"
-              onClick={onNavigateToRegistry}
-              className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:hover:bg-blue-900/60 dark:text-blue-300 border border-blue-200 dark:border-blue-800 transition-colors shadow-xs cursor-pointer"
-            >
-              <ClipboardList className="w-3.5 h-3.5" />
-              <span>Orders Registry ({salesOrders.length})</span>
-            </button>
-          )}
-          <button
-            onClick={handleCleanSampleData}
-            className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors shadow-xs cursor-pointer"
-            title="Clean sample orders and reset local session memory"
-          >
-            <Trash2 className="w-3.5 h-3.5 text-rose-500" />
-            <span>Clean Session Data</span>
-          </button>
+                  
           <button
             onClick={() => setShowNewOrderModal(true)}
             className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-xl bg-blue-600 hover:bg-blue-700 text-white transition-colors shadow-sm cursor-pointer"
