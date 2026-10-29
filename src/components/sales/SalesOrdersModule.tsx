@@ -1030,9 +1030,6 @@ export const SalesOrdersModule: React.FC<SalesOrdersModuleProps> = ({ onNavigate
               <h3 className="font-bold text-sm text-slate-900 dark:text-white">
                 Sales Orders Master Registry
               </h3>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300">
-                Separate Page
-              </span>
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
               Filter order data by Order No, Date range, Status, Customer Name, and Product in the dedicated Master Registry page.
