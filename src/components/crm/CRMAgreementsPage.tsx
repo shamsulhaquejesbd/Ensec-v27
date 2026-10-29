@@ -84,9 +84,11 @@ export const CRMAgreementsPage: React.FC = () => {
     crmAgreements,
     addCRMLead,
     bulkAddCRMLeads,
+    syncAllCRMLeadsToSupabase,
     addCRMCommunicationNote,
     updateCRMDealStage,
     deleteCRMDeal,
+    refreshCRMAgreements,
     currentUser,
   } = useERP();
 
@@ -96,6 +98,13 @@ export const CRMAgreementsPage: React.FC = () => {
   const [showAddDealModal, setShowAddDealModal] = useState(false);
   const [newNoteText, setNewNoteText] = useState('');
   const [selectedQuickTag, setSelectedQuickTag] = useState('');
+
+  // Initial load from Supabase if configured
+  React.useEffect(() => {
+    if (refreshCRMAgreements) {
+      refreshCRMAgreements();
+    }
+  }, []);
 
   // Date Filter State
   const [datePreset, setDatePreset] = useState<DatePreset>('all');
@@ -111,6 +120,8 @@ export const CRMAgreementsPage: React.FC = () => {
   const [isDragging, setIsDragging] = useState(false);
   const [rawPastedCSV, setRawPastedCSV] = useState('');
   const [uploadInputMode, setUploadInputMode] = useState<'file' | 'paste'>('file');
+  const [isImporting, setIsImporting] = useState(false);
+  const [isSyncingAll, setIsSyncingAll] = useState(false);
 
   // Feedback Toast
   const [actionNotice, setActionNotice] = useState<{ type: 'success' | 'info'; message: string } | null>(null);
@@ -201,8 +212,8 @@ export const CRMAgreementsPage: React.FC = () => {
   const signedDeals = filteredDeals.filter((d) => d.stage === 'Agreement Signed');
   const signedValueBDT = signedDeals.reduce((sum, d) => sum + (d.estimatedValueBDT || 0), 0);
 
-  // Single Deal Creator
-  const handleCreateDeal = (e: React.FormEvent) => {
+  // Single Deal Creator with Supabase Sync
+  const handleCreateDeal = async (e: React.FormEvent) => {
     e.preventDefault();
     const notes = initialNote.trim()
       ? [
@@ -220,7 +231,7 @@ export const CRMAgreementsPage: React.FC = () => {
           },
         ];
 
-    addCRMLead({
+    const res = await addCRMLead({
       clientName: dealClientName.trim(),
       companyName: dealCompanyName.trim(),
       phone: dealPhone.trim(),
@@ -237,7 +248,9 @@ export const CRMAgreementsPage: React.FC = () => {
     setShowAddDealModal(false);
     setActionNotice({
       type: 'success',
-      message: `New agreement created for ${dealCompanyName}!`,
+      message: res?.isRemoteSynced
+        ? `New agreement created and synced to Supabase for ${dealCompanyName}!`
+        : `New agreement created for ${dealCompanyName}!`,
     });
     setTimeout(() => setActionNotice(null), 4000);
 
@@ -440,23 +453,72 @@ export const CRMAgreementsPage: React.FC = () => {
     }
   };
 
-  const handleConfirmImport = () => {
+  const handleConfirmImport = async () => {
     if (uploadParsedLeads.length === 0) return;
-    if (bulkAddCRMLeads) {
-      bulkAddCRMLeads(uploadParsedLeads);
-    } else {
-      uploadParsedLeads.forEach((lead) => addCRMLead(lead));
+    setIsImporting(true);
+    let syncRes: { success: boolean; count: number; isRemoteSynced?: boolean; error?: string } = {
+      success: true,
+      count: uploadParsedLeads.length,
+      isRemoteSynced: false,
+    };
+
+    try {
+      if (bulkAddCRMLeads) {
+        syncRes = await bulkAddCRMLeads(uploadParsedLeads);
+      } else {
+        for (const lead of uploadParsedLeads) {
+          await addCRMLead(lead);
+        }
+      }
+    } catch (err: any) {
+      syncRes = { success: false, count: 0, error: err?.message };
     }
+
+    setIsImporting(false);
     setShowUploadModal(false);
-    setActionNotice({
-      type: 'success',
-      message: `Successfully imported ${uploadParsedLeads.length} CRM lead agreements!`,
-    });
-    setTimeout(() => setActionNotice(null), 5000);
+
+    if (syncRes.isRemoteSynced) {
+      setActionNotice({
+        type: 'success',
+        message: `Successfully imported ${syncRes.count} lead agreements and saved directly to Supabase crm_agreements!`,
+      });
+    } else if (syncRes.error) {
+      setActionNotice({
+        type: 'info',
+        message: `Imported ${syncRes.count} leads locally. Supabase sync notice: ${syncRes.error}`,
+      });
+    } else {
+      setActionNotice({
+        type: 'success',
+        message: `Successfully imported ${uploadParsedLeads.length} CRM lead agreements!`,
+      });
+    }
+
+    setTimeout(() => setActionNotice(null), 6000);
     setUploadParsedLeads([]);
     setUploadFileName('');
     setRawPastedCSV('');
   };
+
+  const handleSyncAllToSupabase = async () => {
+    if (!syncAllCRMLeadsToSupabase) return;
+    setIsSyncingAll(true);
+    const res = await syncAllCRMLeadsToSupabase();
+    setIsSyncingAll(false);
+    if (res.success) {
+      setActionNotice({
+        type: 'success',
+        message: `Successfully synchronized ${res.count} CRM agreements with Supabase crm_agreements table!`,
+      });
+    } else {
+      setActionNotice({
+        type: 'info',
+        message: `Supabase sync notice: ${res.error || 'Failed to sync'}`,
+      });
+    }
+    setTimeout(() => setActionNotice(null), 6000);
+  };
+
 
   // Download Sample Template CSV
   const handleDownloadSampleCSV = () => {
@@ -628,6 +690,17 @@ export const CRMAgreementsPage: React.FC = () => {
                 {filteredDeals.length}
               </span>
             )}
+          </button>
+
+          {/* Sync to Supabase Button */}
+          <button
+            onClick={handleSyncAllToSupabase}
+            disabled={isSyncingAll}
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-xl border border-emerald-200 dark:border-emerald-800/60 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 transition-colors shadow-2xs cursor-pointer disabled:opacity-50"
+            title="Push and synchronize all CRM agreements to Supabase crm_agreements table"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 ${isSyncingAll ? 'animate-spin' : ''}`} />
+            <span>{isSyncingAll ? 'Syncing...' : 'Sync to Supabase'}</span>
           </button>
 
           {/* New Agreement Button */}
@@ -1351,12 +1424,21 @@ export const CRMAgreementsPage: React.FC = () => {
               </button>
               <button
                 type="button"
-                disabled={uploadParsedLeads.length === 0}
+                disabled={uploadParsedLeads.length === 0 || isImporting}
                 onClick={handleConfirmImport}
                 className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-40 text-white font-semibold text-xs shadow-sm flex items-center gap-1.5 cursor-pointer"
               >
-                <Check className="w-4 h-4" />
-                <span>Confirm &amp; Import {uploadParsedLeads.length} Leads</span>
+                {isImporting ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Saving to Supabase...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-4 h-4" />
+                    <span>Confirm &amp; Import {uploadParsedLeads.length} Leads</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

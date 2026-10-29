@@ -298,11 +298,12 @@ interface ERPContextType {
     }
   ) => void;
   crmAgreements: CRMLeadAgreement[];
-  addCRMLead: (lead: Omit<CRMLeadAgreement, 'id'>) => void;
-  bulkAddCRMLeads?: (leads: Omit<CRMLeadAgreement, 'id'>[]) => number;
-  addCRMCommunicationNote: (dealId: string, noteText: string) => void;
-  updateCRMDealStage: (dealId: string, stage: CRMLeadAgreement['stage']) => void;
-  deleteCRMDeal: (dealId: string) => void;
+  addCRMLead: (lead: Omit<CRMLeadAgreement, 'id'>) => Promise<{ success: boolean; id: string; error?: string; isRemoteSynced: boolean }> | any;
+  bulkAddCRMLeads?: (leads: Omit<CRMLeadAgreement, 'id'>[]) => Promise<{ success: boolean; count: number; error?: string; isRemoteSynced: boolean }> | any;
+  syncAllCRMLeadsToSupabase?: () => Promise<{ success: boolean; count: number; error?: string }>;
+  addCRMCommunicationNote: (dealId: string, noteText: string) => Promise<{ success: boolean; error?: string }> | any;
+  updateCRMDealStage: (dealId: string, stage: CRMLeadAgreement['stage']) => Promise<{ success: boolean; error?: string }> | any;
+  deleteCRMDeal: (dealId: string) => Promise<{ success: boolean; error?: string }> | any;
   refreshCRMAgreements?: () => Promise<void>;
 
   // Field Force & GPS
@@ -5415,28 +5416,156 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog('PRODUCT_CHANNEL_PRICES_UPDATED', 'Pricing Engine', `Updated channel price tiers for product ID ${productId}`);
   };
 
-  const addCRMLead = (lead: Omit<CRMLeadAgreement, 'id'>) => {
-    const id = `crm-${Date.now().toString().slice(-4)}`;
+  const addCRMLead = async (lead: Omit<CRMLeadAgreement, 'id'>) => {
+    const id = `CRM-${Date.now().toString().slice(-5)}`;
     const newDeal: CRMLeadAgreement = {
       ...lead,
       id,
     };
     setCrmAgreements((prev) => [newDeal, ...prev]);
-    addAuditLog('CRM_DEAL_CREATED', 'CRM & Agreements', `Created corporate lead agreement: ${newDeal.clientName} (Est. ${newDeal.estimatedValueBDT.toLocaleString()} BDT)`);
+    addAuditLog(
+      'CRM_DEAL_CREATED',
+      'CRM & Agreements',
+      `Created corporate lead agreement: ${newDeal.clientName} (Est. ${newDeal.estimatedValueBDT.toLocaleString()} BDT)`
+    );
+
+    let isRemoteSynced = false;
+    let syncError: string | undefined = undefined;
+
+    const sb = getSupabase();
+    if (sb) {
+      try {
+        const payload = {
+          deal_code: id,
+          client_name: newDeal.clientName,
+          company_name: newDeal.companyName,
+          contact_person: newDeal.contactPerson || null,
+          phone: newDeal.phone,
+          email: newDeal.email || null,
+          channel: newDeal.channel || 'Direct Corporate',
+          stage: newDeal.stage || 'Lead',
+          expected_volume_units: Number(newDeal.expectedVolumeUnits) || 100,
+          estimated_value_bdt: Number(newDeal.estimatedValueBDT) || 0,
+          deal_value_bdt: Number(newDeal.dealValueBDT || newDeal.estimatedValueBDT) || 0,
+          contract_term_months: Number(newDeal.contractTermMonths) || 12,
+          salesperson_id: newDeal.salespersonId || null,
+          salesperson_name: newDeal.salespersonName || 'Tanvir Hossain',
+          last_contact_date: newDeal.lastContactDate || new Date().toISOString().substring(0, 10),
+          communication_notes: newDeal.communicationNotes || [],
+          status: 'Active',
+        };
+        const { error } = await sb.from('crm_agreements').upsert(payload, { onConflict: 'deal_code' });
+        if (error) {
+          syncError = error.message;
+          console.warn('Supabase addCRMLead error:', error.message);
+        } else {
+          isRemoteSynced = true;
+          await refreshCRMAgreements();
+        }
+      } catch (err: any) {
+        syncError = err?.message;
+        console.error('Supabase addCRMLead exception:', err);
+      }
+    }
+
+    return { success: true, id, isRemoteSynced, error: syncError };
   };
 
-  const bulkAddCRMLeads = (leads: Omit<CRMLeadAgreement, 'id'>[]): number => {
-    const timestamp = Date.now().toString().slice(-4);
+  const bulkAddCRMLeads = async (leads: Omit<CRMLeadAgreement, 'id'>[]) => {
+    const timestamp = Date.now().toString().slice(-5);
     const newDeals: CRMLeadAgreement[] = leads.map((lead, idx) => ({
       ...lead,
-      id: `crm-${timestamp}-${idx + 1}`,
+      id: `CRM-${timestamp}-${idx + 1}`,
     }));
     setCrmAgreements((prev) => [...newDeals, ...prev]);
-    addAuditLog('CRM_BULK_UPLOAD', 'CRM & Agreements', `Bulk imported ${newDeals.length} corporate CRM lead agreements`);
-    return newDeals.length;
+    addAuditLog(
+      'CRM_BULK_UPLOAD',
+      'CRM & Agreements',
+      `Bulk imported ${newDeals.length} corporate CRM lead agreements`
+    );
+
+    let isRemoteSynced = false;
+    let syncError: string | undefined = undefined;
+
+    const sb = getSupabase();
+    if (sb) {
+      try {
+        const payload = newDeals.map((d) => ({
+          deal_code: d.id,
+          client_name: d.clientName,
+          company_name: d.companyName,
+          contact_person: d.contactPerson || null,
+          phone: d.phone,
+          email: d.email || null,
+          channel: d.channel || 'Direct Corporate',
+          stage: d.stage || 'Lead',
+          expected_volume_units: Number(d.expectedVolumeUnits) || 100,
+          estimated_value_bdt: Number(d.estimatedValueBDT) || 0,
+          deal_value_bdt: Number(d.dealValueBDT || d.estimatedValueBDT) || 0,
+          contract_term_months: Number(d.contractTermMonths) || 12,
+          salesperson_id: d.salespersonId || null,
+          salesperson_name: d.salespersonName || 'Tanvir Hossain',
+          last_contact_date: d.lastContactDate || new Date().toISOString().substring(0, 10),
+          communication_notes: d.communicationNotes || [],
+          status: 'Active',
+        }));
+
+        const { error } = await sb.from('crm_agreements').upsert(payload, { onConflict: 'deal_code' });
+        if (error) {
+          syncError = error.message;
+          console.warn('Supabase bulkAddCRMLeads error:', error.message);
+        } else {
+          isRemoteSynced = true;
+          await refreshCRMAgreements();
+        }
+      } catch (err: any) {
+        syncError = err?.message;
+        console.error('Supabase bulkAddCRMLeads exception:', err);
+      }
+    }
+
+    return { success: true, count: newDeals.length, isRemoteSynced, error: syncError };
   };
 
-  const addCRMCommunicationNote = (dealId: string, noteText: string) => {
+  const syncAllCRMLeadsToSupabase = async () => {
+    const sb = getSupabase();
+    if (!sb) {
+      return { success: false, count: 0, error: 'Supabase client is not configured' };
+    }
+    try {
+      const payload = crmAgreements.map((d) => ({
+        deal_code: d.id,
+        client_name: d.clientName,
+        company_name: d.companyName,
+        contact_person: d.contactPerson || null,
+        phone: d.phone,
+        email: d.email || null,
+        channel: d.channel || 'Direct Corporate',
+        stage: d.stage || 'Lead',
+        expected_volume_units: Number(d.expectedVolumeUnits) || 100,
+        estimated_value_bdt: Number(d.estimatedValueBDT) || 0,
+        deal_value_bdt: Number(d.dealValueBDT || d.estimatedValueBDT) || 0,
+        contract_term_months: Number(d.contractTermMonths) || 12,
+        salesperson_id: d.salespersonId || null,
+        salesperson_name: d.salespersonName || 'Tanvir Hossain',
+        last_contact_date: d.lastContactDate || new Date().toISOString().substring(0, 10),
+        communication_notes: d.communicationNotes || [],
+        status: 'Active',
+      }));
+
+      const { error } = await sb.from('crm_agreements').upsert(payload, { onConflict: 'deal_code' });
+      if (error) {
+        return { success: false, count: 0, error: error.message };
+      }
+      await refreshCRMAgreements();
+      return { success: true, count: payload.length };
+    } catch (err: any) {
+      return { success: false, count: 0, error: err?.message || 'Sync failed' };
+    }
+  };
+
+  const addCRMCommunicationNote = async (dealId: string, noteText: string) => {
+    let updatedDeal: CRMLeadAgreement | undefined = undefined;
     setCrmAgreements((prev) =>
       prev.map((deal) => {
         if (deal.id === dealId) {
@@ -5445,19 +5574,39 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             author: currentUser.name,
             note: noteText,
           };
-          return {
+          updatedDeal = {
             ...deal,
             lastContactDate: noteObj.date,
-            communicationNotes: [...deal.communicationNotes, noteObj],
+            communicationNotes: [...(deal.communicationNotes || []), noteObj],
           };
+          return updatedDeal;
         }
         return deal;
       })
     );
     addAuditLog('CRM_NOTE_ADDED', 'CRM & Agreements', `Added interaction note for agreement ID ${dealId}`);
+
+    const sb = getSupabase();
+    if (sb && updatedDeal) {
+      const d: CRMLeadAgreement = updatedDeal;
+      try {
+        await sb
+          .from('crm_agreements')
+          .update({
+            last_contact_date: d.lastContactDate,
+            communication_notes: d.communicationNotes,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('deal_code', dealId);
+      } catch (e) {
+        console.warn('Supabase note update notice:', e);
+      }
+    }
+    return { success: true };
   };
 
-  const updateCRMDealStage = (dealId: string, stage: CRMLeadAgreement['stage']) => {
+  const updateCRMDealStage = async (dealId: string, stage: CRMLeadAgreement['stage']) => {
+    let updatedDeal: CRMLeadAgreement | undefined = undefined;
     setCrmAgreements((prev) =>
       prev.map((deal) => {
         if (deal.id === dealId) {
@@ -5466,23 +5615,53 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             author: currentUser.name,
             note: `Status updated from ${deal.stage} to ${stage}`,
           };
-          return {
+          updatedDeal = {
             ...deal,
             stage,
             lastContactDate: noteObj.date,
-            communicationNotes: [...deal.communicationNotes, noteObj],
+            communicationNotes: [...(deal.communicationNotes || []), noteObj],
           };
+          return updatedDeal;
         }
         return deal;
       })
     );
     addAuditLog('CRM_STAGE_UPDATED', 'CRM & Agreements', `Updated deal stage for agreement ${dealId} to ${stage}`);
+
+    const sb = getSupabase();
+    if (sb && updatedDeal) {
+      const d: CRMLeadAgreement = updatedDeal;
+      try {
+        await sb
+          .from('crm_agreements')
+          .update({
+            stage,
+            last_contact_date: d.lastContactDate,
+            communication_notes: d.communicationNotes,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('deal_code', dealId);
+      } catch (e) {
+        console.warn('Supabase stage update notice:', e);
+      }
+    }
+    return { success: true };
   };
 
-  const deleteCRMDeal = (dealId: string) => {
+  const deleteCRMDeal = async (dealId: string) => {
     const target = crmAgreements.find((d) => d.id === dealId);
     setCrmAgreements((prev) => prev.filter((d) => d.id !== dealId));
     addAuditLog('CRM_DEAL_DELETED', 'CRM & Agreements', `Deleted agreement deal: ${target?.clientName || dealId}`);
+
+    const sb = getSupabase();
+    if (sb) {
+      try {
+        await sb.from('crm_agreements').delete().eq('deal_code', dealId);
+      } catch (e) {
+        console.warn('Supabase delete deal notice:', e);
+      }
+    }
+    return { success: true };
   };
 
   // Stage 8: Field Force & GPS
@@ -7548,6 +7727,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateCRMDealStage,
         deleteCRMDeal,
         refreshCRMAgreements,
+        syncAllCRMLeadsToSupabase,
         fieldForceReps,
         addFieldForceRep,
         updateFieldForceRep,
