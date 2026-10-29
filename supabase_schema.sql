@@ -1512,3 +1512,170 @@ VALUES
     2750000.00
   )
 ON CONFLICT DO NOTHING;
+
+-- ============================================================================
+-- 19. CRM AGREEMENTS & INSTITUTIONAL LEADS TABLE
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.crm_agreements (
+  id BIGSERIAL PRIMARY KEY,
+  deal_code TEXT UNIQUE NOT NULL, -- Unique deal code e.g. 'CRM-01', 'CRM-2026-0001'
+  client_name TEXT NOT NULL,      -- Project / Lead Title (e.g. Grameenphone Tower Energy Rollout)
+  company_name TEXT NOT NULL,     -- Institutional Customer (e.g. Grameenphone Limited)
+  contact_person TEXT,            -- Primary Contact Name
+  phone TEXT NOT NULL,            -- Direct Contact Phone
+  email TEXT,                     -- Contact Email
+  channel TEXT DEFAULT 'Direct Corporate', -- 'Direct Corporate' | 'Tender / Institutional' | 'Govt & Semi-Govt' | 'Distributor Network'
+  stage TEXT NOT NULL DEFAULT 'Lead', -- 'Lead' | 'Contacted' | 'Proposal Sent' | 'Agreement Signed' | 'Lost'
+  expected_volume_units INT DEFAULT 100,
+  estimated_value_bdt NUMERIC(15, 2) DEFAULT 0.00,
+  deal_value_bdt NUMERIC(15, 2) DEFAULT 0.00,
+  contract_term_months INT DEFAULT 12,
+  salesperson_id TEXT,
+  salesperson_name TEXT NOT NULL DEFAULT 'Tanvir Hossain',
+  last_contact_date DATE DEFAULT CURRENT_DATE,
+  expected_closing_date DATE,
+  communication_notes JSONB DEFAULT '[]'::jsonb, -- Array of { date, author, note }
+  tags TEXT[] DEFAULT '{}',
+  status TEXT DEFAULT 'Active',                  -- 'Active' | 'Archived' | 'Suspended'
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Ensure columns exist if table was partially created
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS deal_code TEXT;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS client_name TEXT;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS company_name TEXT;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS contact_person TEXT;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS phone TEXT;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS channel TEXT DEFAULT 'Direct Corporate';
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS stage TEXT DEFAULT 'Lead';
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS expected_volume_units INT DEFAULT 100;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS estimated_value_bdt NUMERIC(15, 2) DEFAULT 0.00;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS deal_value_bdt NUMERIC(15, 2) DEFAULT 0.00;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS contract_term_months INT DEFAULT 12;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS salesperson_id TEXT;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS salesperson_name TEXT DEFAULT 'Tanvir Hossain';
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS last_contact_date DATE DEFAULT CURRENT_DATE;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS expected_closing_date DATE;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS communication_notes JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}';
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Active';
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
+-- Performance Indexes
+CREATE INDEX IF NOT EXISTS idx_crm_agreements_deal_code ON public.crm_agreements(deal_code);
+CREATE INDEX IF NOT EXISTS idx_crm_agreements_company_name ON public.crm_agreements(company_name);
+CREATE INDEX IF NOT EXISTS idx_crm_agreements_stage ON public.crm_agreements(stage);
+CREATE INDEX IF NOT EXISTS idx_crm_agreements_salesperson ON public.crm_agreements(salesperson_name);
+CREATE INDEX IF NOT EXISTS idx_crm_agreements_last_contact_date ON public.crm_agreements(last_contact_date);
+CREATE INDEX IF NOT EXISTS idx_crm_agreements_created_at ON public.crm_agreements(created_at);
+
+-- Row Level Security (RLS) Policies
+ALTER TABLE public.crm_agreements ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow public read access to crm_agreements" ON public.crm_agreements;
+CREATE POLICY "Allow public read access to crm_agreements"
+  ON public.crm_agreements FOR SELECT
+  USING (true);
+
+DROP POLICY IF EXISTS "Allow public insert to crm_agreements" ON public.crm_agreements;
+CREATE POLICY "Allow public insert to crm_agreements"
+  ON public.crm_agreements FOR INSERT
+  WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public update to crm_agreements" ON public.crm_agreements;
+CREATE POLICY "Allow public update to crm_agreements"
+  ON public.crm_agreements FOR UPDATE
+  USING (true)
+  WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public delete to crm_agreements" ON public.crm_agreements;
+CREATE POLICY "Allow public delete to crm_agreements"
+  ON public.crm_agreements FOR DELETE
+  USING (true);
+
+-- Seed Initial Sample CRM Lead Agreements
+INSERT INTO public.crm_agreements (
+  deal_code, client_name, company_name, contact_person, phone, channel, stage,
+  expected_volume_units, estimated_value_bdt, contract_term_months, salesperson_name,
+  last_contact_date, communication_notes
+)
+VALUES
+  (
+    'CRM-01',
+    'Grameenphone Ltd. (Tower Energy Procurement)',
+    'Grameenphone Limited',
+    'Brigadier General (Retd) Tariqul Islam',
+    '+880 1700-112233',
+    'Direct Corporate',
+    'Agreement Signed',
+    500,
+    57500000.00,
+    24,
+    'Tanvir Hossain',
+    '2026-10-15',
+    '[{"date":"2026-09-10","author":"Tanvir Hossain","note":"Technical evaluation of ET-48100 48V 100Ah battery bank passed GP laboratory bench test."},{"date":"2026-09-25","author":"Super Admin","note":"Commercial terms finalized: 60-month warranty and 45-day payment credit cycle."},{"date":"2026-10-15","author":"Tanvir Hossain","note":"Master Service Agreement signed. Initial rollout batch of 50 units scheduled for Dhaka hub."}]'::jsonb
+  ),
+  (
+    'CRM-02',
+    'Summit Towers Bangladesh (National BTS Backup)',
+    'Summit Communications Ltd.',
+    'Engr. Zahidul Hassan (Head of Procurement)',
+    '+880 1819-445566',
+    'Direct Corporate',
+    'Proposal Sent',
+    200,
+    23000000.00,
+    12,
+    'Tanvir Hossain',
+    '2026-10-22',
+    '[{"date":"2026-10-12","author":"Tanvir Hossain","note":"Presentation delivered at Summit Tower Tejgaon HQ. High interest in 51.2V 100Ah rack-mounted solutions."},{"date":"2026-10-22","author":"Tanvir Hossain","note":"Formal quotation submitted: BDT 115,000 per unit for 200 units with 48-month warranty."}]'::jsonb
+  ),
+  (
+    'CRM-03',
+    'Banglalink Regional BTS Expansion',
+    'Banglalink Digital Communications',
+    'Mustafa Kamal (Infrastructure Lead)',
+    '+880 1911-223344',
+    'Direct Corporate',
+    'Proposal Sent',
+    350,
+    42000000.00,
+    24,
+    'Tanvir Hossain',
+    '2026-10-25',
+    '[{"date":"2026-10-25","author":"Tanvir Hossain","note":"Commercial proposal for 350 telecom lithium packs submitted."}]'::jsonb
+  ),
+  (
+    'CRM-04',
+    'Robi Axiata Microgrid Storage',
+    'Robi Axiata Limited',
+    'Ashraf Ali (Renewable Power Manager)',
+    '+880 1819-998877',
+    'Direct Corporate',
+    'Contacted',
+    200,
+    24000000.00,
+    12,
+    'Zubair Ahmed',
+    '2026-10-20',
+    '[{"date":"2026-10-20","author":"Zubair Ahmed","note":"Initial technical meeting completed for solar microgrid backup in Chittagong Hill Tracts."}]'::jsonb
+  ),
+  (
+    'CRM-05',
+    'Walton Hi-Tech AGV & Electric Fleet Energy',
+    'Walton Hi-Tech Industries PLC',
+    'Md. Faruk Hossain (Director Logistics)',
+    '+880 1677-889900',
+    'Direct Corporate',
+    'Contacted',
+    150,
+    17250000.00,
+    12,
+    'Tanvir Hossain',
+    '2026-10-18',
+    '[{"date":"2026-10-18","author":"Tanvir Hossain","note":"Factory visit conducted at Chandra complex. Walton team tested sample 48V EV pack with positive feedback."}]'::jsonb
+  )
+ON CONFLICT (deal_code) DO NOTHING;
+

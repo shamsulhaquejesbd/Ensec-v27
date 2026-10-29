@@ -299,9 +299,11 @@ interface ERPContextType {
   ) => void;
   crmAgreements: CRMLeadAgreement[];
   addCRMLead: (lead: Omit<CRMLeadAgreement, 'id'>) => void;
+  bulkAddCRMLeads?: (leads: Omit<CRMLeadAgreement, 'id'>[]) => number;
   addCRMCommunicationNote: (dealId: string, noteText: string) => void;
   updateCRMDealStage: (dealId: string, stage: CRMLeadAgreement['stage']) => void;
   deleteCRMDeal: (dealId: string) => void;
+  refreshCRMAgreements?: () => Promise<void>;
 
   // Field Force & GPS
   fieldForceReps: FieldForceRep[];
@@ -1877,6 +1879,46 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const refreshCRMAgreements = async () => {
+    const sb = getSupabase();
+    if (sb) {
+      try {
+        const { data, error } = await sb
+          .from('crm_agreements')
+          .select('*')
+          .order('id', { ascending: false });
+
+        if (!error && Array.isArray(data) && data.length > 0) {
+          const mapped: CRMLeadAgreement[] = data.map((row: any) => ({
+            id: row.deal_code ? String(row.deal_code) : `crm-${row.id}`,
+            clientName: row.client_name || row.company_name || 'Corporate Lead',
+            companyName: row.company_name || row.client_name || '',
+            phone: row.phone || '',
+            stage: (row.stage as any) || 'Lead',
+            expectedVolumeUnits: Number(row.expected_volume_units) || 100,
+            estimatedValueBDT: Number(row.estimated_value_bdt) || 0,
+            dealValueBDT: Number(row.deal_value_bdt || row.estimated_value_bdt) || 0,
+            contractTermMonths: Number(row.contract_term_months) || 12,
+            salespersonId: row.salesperson_id || '',
+            salespersonName: row.salesperson_name || 'Tanvir Hossain',
+            lastContactDate: row.last_contact_date ? String(row.last_contact_date).substring(0, 10) : new Date().toISOString().substring(0, 10),
+            communicationNotes: Array.isArray(row.communication_notes)
+              ? row.communication_notes
+              : typeof row.communication_notes === 'string'
+              ? JSON.parse(row.communication_notes || '[]')
+              : [],
+          }));
+          setCrmAgreements(mapped);
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('ensec_crm_agreements', JSON.stringify(mapped));
+          }
+        }
+      } catch (err) {
+        console.warn('Supabase refreshCRMAgreements notice:', err);
+      }
+    }
+  };
+
   const refreshAllBasicData = async () => {
     await Promise.allSettled([
       refreshUsers(),
@@ -1898,6 +1940,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       refreshFieldForce(),
       refreshOffers(),
       refreshSalesOrders(),
+      refreshCRMAgreements(),
     ]);
   };
 
@@ -5382,6 +5425,17 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog('CRM_DEAL_CREATED', 'CRM & Agreements', `Created corporate lead agreement: ${newDeal.clientName} (Est. ${newDeal.estimatedValueBDT.toLocaleString()} BDT)`);
   };
 
+  const bulkAddCRMLeads = (leads: Omit<CRMLeadAgreement, 'id'>[]): number => {
+    const timestamp = Date.now().toString().slice(-4);
+    const newDeals: CRMLeadAgreement[] = leads.map((lead, idx) => ({
+      ...lead,
+      id: `crm-${timestamp}-${idx + 1}`,
+    }));
+    setCrmAgreements((prev) => [...newDeals, ...prev]);
+    addAuditLog('CRM_BULK_UPLOAD', 'CRM & Agreements', `Bulk imported ${newDeals.length} corporate CRM lead agreements`);
+    return newDeals.length;
+  };
+
   const addCRMCommunicationNote = (dealId: string, noteText: string) => {
     setCrmAgreements((prev) =>
       prev.map((deal) => {
@@ -7489,9 +7543,11 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateProductChannelPricing,
         crmAgreements,
         addCRMLead,
+        bulkAddCRMLeads,
         addCRMCommunicationNote,
         updateCRMDealStage,
         deleteCRMDeal,
+        refreshCRMAgreements,
         fieldForceReps,
         addFieldForceRep,
         updateFieldForceRep,

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import {
   FileSignature,
   PlusCircle,
@@ -6,6 +6,7 @@ import {
   Building2,
   Phone,
   Calendar,
+  CalendarDays,
   DollarSign,
   CheckCircle2,
   Clock,
@@ -24,6 +25,13 @@ import {
   Layers,
   FileCheck2,
   X,
+  Upload,
+  Download,
+  FileSpreadsheet,
+  FileUp,
+  ArrowUpDown,
+  RefreshCw,
+  HelpCircle,
 } from 'lucide-react';
 import { useERP } from '../../context/ERPContext.tsx';
 import { CRMLeadAgreement } from '../../types/erp.ts';
@@ -69,14 +77,16 @@ const STAGE_CONFIG: Record<
   },
 };
 
+type DatePreset = 'all' | 'today' | 'last7' | 'thisMonth' | 'last30' | 'thisYear' | 'custom';
+
 export const CRMAgreementsPage: React.FC = () => {
   const {
     crmAgreements,
     addCRMLead,
+    bulkAddCRMLeads,
     addCRMCommunicationNote,
     updateCRMDealStage,
     deleteCRMDeal,
-    products,
     currentUser,
   } = useERP();
 
@@ -87,6 +97,24 @@ export const CRMAgreementsPage: React.FC = () => {
   const [newNoteText, setNewNoteText] = useState('');
   const [selectedQuickTag, setSelectedQuickTag] = useState('');
 
+  // Date Filter State
+  const [datePreset, setDatePreset] = useState<DatePreset>('all');
+  const [startDate, setStartDate] = useState<string>('');
+  const [endDate, setEndDate] = useState<string>('');
+  const [showDateFilterPopover, setShowDateFilterPopover] = useState(false);
+
+  // CSV Lead Upload State
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [uploadParsedLeads, setUploadParsedLeads] = useState<Omit<CRMLeadAgreement, 'id'>[]>([]);
+  const [uploadFileName, setUploadFileName] = useState('');
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [rawPastedCSV, setRawPastedCSV] = useState('');
+  const [uploadInputMode, setUploadInputMode] = useState<'file' | 'paste'>('file');
+
+  // Feedback Toast
+  const [actionNotice, setActionNotice] = useState<{ type: 'success' | 'info'; message: string } | null>(null);
+
   // Form State for New Deal
   const [dealClientName, setDealClientName] = useState('');
   const [dealCompanyName, setDealCompanyName] = useState('');
@@ -95,34 +123,85 @@ export const CRMAgreementsPage: React.FC = () => {
   const [dealEstValueBDT, setDealEstValueBDT] = useState(11500000);
   const [dealTermMonths, setDealTermMonths] = useState(12);
   const [dealStage, setDealStage] = useState<CRMLeadAgreement['stage']>('Lead');
-  const [dealSalesperson, setDealSalesperson] = useState('Tanvir Hossain');
+  const [dealSalesperson, setDealSalesperson] = useState(currentUser?.name || 'Tanvir Hossain');
   const [initialNote, setInitialNote] = useState('');
 
-  // Selected Deal
-  const selectedDeal = useERP().crmAgreements.find((d) => d.id === selectedDealId) || crmAgreements[0] || null;
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Filtered Deals
+  // Selected Deal
+  const selectedDeal = crmAgreements.find((d) => d.id === selectedDealId) || crmAgreements[0] || null;
+
+  // Set Date Preset Helper
+  const applyDatePreset = (preset: DatePreset) => {
+    setDatePreset(preset);
+    const today = new Date();
+    const toYMD = (d: Date) => d.toISOString().substring(0, 10);
+
+    if (preset === 'all') {
+      setStartDate('');
+      setEndDate('');
+    } else if (preset === 'today') {
+      const todayStr = toYMD(today);
+      setStartDate(todayStr);
+      setEndDate(todayStr);
+    } else if (preset === 'last7') {
+      const past = new Date();
+      past.setDate(today.getDate() - 7);
+      setStartDate(toYMD(past));
+      setEndDate(toYMD(today));
+    } else if (preset === 'thisMonth') {
+      const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+      setStartDate(toYMD(firstDay));
+      setEndDate(toYMD(today));
+    } else if (preset === 'last30') {
+      const past = new Date();
+      past.setDate(today.getDate() - 30);
+      setStartDate(toYMD(past));
+      setEndDate(toYMD(today));
+    } else if (preset === 'thisYear') {
+      const firstDayOfYear = new Date(today.getFullYear(), 0, 1);
+      setStartDate(toYMD(firstDayOfYear));
+      setEndDate(toYMD(today));
+    }
+  };
+
+  // Filtered Deals (Search + Stage + Date Range)
   const filteredDeals = useMemo(() => {
     return crmAgreements.filter((deal) => {
+      // 1. Search filter
+      const search = searchTerm.trim().toLowerCase();
       const matchesSearch =
-        deal.clientName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        deal.companyName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        deal.phone.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        deal.salespersonName.toLowerCase().includes(searchTerm.toLowerCase());
+        !search ||
+        (deal.clientName && deal.clientName.toLowerCase().includes(search)) ||
+        (deal.companyName && deal.companyName.toLowerCase().includes(search)) ||
+        (deal.phone && deal.phone.toLowerCase().includes(search)) ||
+        (deal.salespersonName && deal.salespersonName.toLowerCase().includes(search));
 
+      // 2. Stage filter
       const matchesStage = selectedStageFilter === 'All' || deal.stage === selectedStageFilter;
 
-      return matchesSearch && matchesStage;
-    });
-  }, [crmAgreements, searchTerm, selectedStageFilter]);
+      // 3. Date filter (based on lastContactDate or creation notes date)
+      let matchesDate = true;
+      const dealDate = deal.lastContactDate || deal.communicationNotes?.[0]?.date || '';
+      if (startDate && dealDate) {
+        matchesDate = matchesDate && dealDate >= startDate;
+      }
+      if (endDate && dealDate) {
+        matchesDate = matchesDate && dealDate <= endDate;
+      }
 
-  // Aggregate Metrics
-  const totalDeals = crmAgreements.length;
-  const totalPipelineBDT = crmAgreements.reduce((sum, d) => sum + (d.estimatedValueBDT || 0), 0);
-  const totalVolumeUnits = crmAgreements.reduce((sum, d) => sum + (d.expectedVolumeUnits || 0), 0);
-  const signedDeals = crmAgreements.filter((d) => d.stage === 'Agreement Signed');
+      return matchesSearch && matchesStage && matchesDate;
+    });
+  }, [crmAgreements, searchTerm, selectedStageFilter, startDate, endDate]);
+
+  // Aggregate Metrics based on filtered leads
+  const totalDeals = filteredDeals.length;
+  const totalPipelineBDT = filteredDeals.reduce((sum, d) => sum + (d.estimatedValueBDT || 0), 0);
+  const totalVolumeUnits = filteredDeals.reduce((sum, d) => sum + (d.expectedVolumeUnits || 0), 0);
+  const signedDeals = filteredDeals.filter((d) => d.stage === 'Agreement Signed');
   const signedValueBDT = signedDeals.reduce((sum, d) => sum + (d.estimatedValueBDT || 0), 0);
 
+  // Single Deal Creator
   const handleCreateDeal = (e: React.FormEvent) => {
     e.preventDefault();
     const notes = initialNote.trim()
@@ -142,20 +221,26 @@ export const CRMAgreementsPage: React.FC = () => {
         ];
 
     addCRMLead({
-      clientName: dealClientName,
-      companyName: dealCompanyName,
-      phone: dealPhone,
+      clientName: dealClientName.trim(),
+      companyName: dealCompanyName.trim(),
+      phone: dealPhone.trim(),
       stage: dealStage,
-      expectedVolumeUnits: Number(dealVolumeUnits),
-      estimatedValueBDT: Number(dealEstValueBDT),
-      contractTermMonths: Number(dealTermMonths),
+      expectedVolumeUnits: Number(dealVolumeUnits) || 100,
+      estimatedValueBDT: Number(dealEstValueBDT) || 0,
+      contractTermMonths: Number(dealTermMonths) || 12,
       salespersonId: currentUser.id,
-      salespersonName: dealSalesperson,
+      salespersonName: dealSalesperson.trim(),
       lastContactDate: new Date().toISOString().substring(0, 10),
       communicationNotes: notes,
     });
 
     setShowAddDealModal(false);
+    setActionNotice({
+      type: 'success',
+      message: `New agreement created for ${dealCompanyName}!`,
+    });
+    setTimeout(() => setActionNotice(null), 4000);
+
     // Reset Form
     setDealClientName('');
     setDealCompanyName('');
@@ -190,6 +275,279 @@ export const CRMAgreementsPage: React.FC = () => {
     }
   };
 
+  // Robust CSV Parser
+  const parseCSVContent = (csvText: string): Omit<CRMLeadAgreement, 'id'>[] => {
+    const lines = csvText.split(/\r?\n/).filter((line) => line.trim().length > 0);
+    if (lines.length < 2) {
+      throw new Error('CSV file must contain a header row and at least one data row.');
+    }
+
+    // Split CSV line respecting double quotes
+    const parseLine = (line: string): string[] => {
+      const result: string[] = [];
+      let current = '';
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"' || char === "'") {
+          if (inQuotes && line[i + 1] === char) {
+            current += char;
+            i++;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (char === ',' && !inQuotes) {
+          result.push(current.trim());
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      result.push(current.trim());
+      return result;
+    };
+
+    const rawHeaders = parseLine(lines[0]);
+    const headers = rawHeaders.map((h) => h.toLowerCase().replace(/[^a-z0-9]/g, ''));
+
+    // Map column indices
+    const colIndex = {
+      client: headers.findIndex((h) => h.includes('client') || h.includes('project') || h.includes('title')),
+      company: headers.findIndex((h) => h.includes('company') || h.includes('org') || h.includes('customer') || h.includes('account')),
+      phone: headers.findIndex((h) => h.includes('phone') || h.includes('mobile') || h.includes('contact')),
+      stage: headers.findIndex((h) => h.includes('stage') || h.includes('status')),
+      volume: headers.findIndex((h) => h.includes('volume') || h.includes('unit') || h.includes('qty')),
+      value: headers.findIndex((h) => h.includes('value') || h.includes('bdt') || h.includes('amount') || h.includes('est') || h.includes('price')),
+      term: headers.findIndex((h) => h.includes('term') || h.includes('month') || h.includes('duration')),
+      salesperson: headers.findIndex((h) => h.includes('sales') || h.includes('rep') || h.includes('officer') || h.includes('owner') || h.includes('assigned')),
+      date: headers.findIndex((h) => h.includes('date') || h.includes('contacted') || h.includes('time')),
+      notes: headers.findIndex((h) => h.includes('note') || h.includes('comment') || h.includes('desc') || h.includes('detail')),
+    };
+
+    const parsedResults: Omit<CRMLeadAgreement, 'id'>[] = [];
+    const todayStr = new Date().toISOString().substring(0, 10);
+
+    for (let i = 1; i < lines.length; i++) {
+      const row = parseLine(lines[i]);
+      if (row.length === 0 || row.every((c) => !c.trim())) continue;
+
+      const rawClient = colIndex.client !== -1 ? row[colIndex.client] : '';
+      const rawCompany = colIndex.company !== -1 ? row[colIndex.company] : '';
+      const clientName = rawClient || rawCompany || `Lead #${i}`;
+      const companyName = rawCompany || rawClient || 'Corporate Account';
+      const phone = colIndex.phone !== -1 ? row[colIndex.phone] : '+880 1700-000000';
+
+      // Parse Stage
+      let stage: CRMLeadAgreement['stage'] = 'Lead';
+      const rawStage = (colIndex.stage !== -1 ? row[colIndex.stage] : '').toLowerCase();
+      if (rawStage.includes('sign') || rawStage.includes('exec') || rawStage.includes('win') || rawStage.includes('contract')) {
+        stage = 'Agreement Signed';
+      } else if (rawStage.includes('prop') || rawStage.includes('offer') || rawStage.includes('sent')) {
+        stage = 'Proposal Sent';
+      } else if (rawStage.includes('cont') || rawStage.includes('meet') || rawStage.includes('call') || rawStage.includes('pitch')) {
+        stage = 'Contacted';
+      } else if (rawStage.includes('lost') || rawStage.includes('close') || rawStage.includes('drop')) {
+        stage = 'Lost';
+      }
+
+      // Parse Volume
+      const rawVolume = colIndex.volume !== -1 ? row[colIndex.volume] : '';
+      const volumeNum = Number(rawVolume.replace(/[^0-9.]/g, '')) || 100;
+
+      // Parse Value
+      const rawValue = colIndex.value !== -1 ? row[colIndex.value] : '';
+      const valueNum = Number(rawValue.replace(/[^0-9.]/g, '')) || 1000000;
+
+      // Parse Term
+      const rawTerm = colIndex.term !== -1 ? row[colIndex.term] : '';
+      const termNum = Number(rawTerm.replace(/[^0-9.]/g, '')) || 12;
+
+      // Parse Salesperson
+      const rawSalesperson = colIndex.salesperson !== -1 ? row[colIndex.salesperson] : '';
+      const salespersonName = rawSalesperson || currentUser?.name || 'Tanvir Hossain';
+
+      // Parse Date
+      let contactDate = colIndex.date !== -1 && row[colIndex.date] ? row[colIndex.date].trim() : todayStr;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(contactDate)) {
+        contactDate = todayStr;
+      }
+
+      // Parse Notes
+      const noteText = colIndex.notes !== -1 && row[colIndex.notes] ? row[colIndex.notes].trim() : `Uploaded lead for ${companyName}`;
+
+      parsedResults.push({
+        clientName,
+        companyName,
+        phone,
+        stage,
+        expectedVolumeUnits: volumeNum,
+        estimatedValueBDT: valueNum,
+        contractTermMonths: termNum,
+        salespersonId: currentUser?.id || 'u-rep',
+        salespersonName,
+        lastContactDate: contactDate,
+        communicationNotes: [
+          {
+            date: contactDate,
+            author: currentUser?.name || salespersonName,
+            note: noteText,
+          },
+        ],
+      });
+    }
+
+    if (parsedResults.length === 0) {
+      throw new Error('No valid CRM lead records found in the uploaded file.');
+    }
+
+    return parsedResults;
+  };
+
+  // File Upload Handlers
+  const handleFileUpload = (file: File) => {
+    setUploadError(null);
+    setUploadFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const text = e.target?.result as string;
+        const parsed = parseCSVContent(text);
+        setUploadParsedLeads(parsed);
+      } catch (err: any) {
+        setUploadError(err.message || 'Failed to parse CSV file. Please verify column formats.');
+        setUploadParsedLeads([]);
+      }
+    };
+    reader.onerror = () => {
+      setUploadError('Failed to read the selected file.');
+    };
+    reader.readAsText(file);
+  };
+
+  const handlePastedCSVSubmit = () => {
+    if (!rawPastedCSV.trim()) {
+      setUploadError('Please paste your CSV text.');
+      return;
+    }
+    try {
+      setUploadError(null);
+      const parsed = parseCSVContent(rawPastedCSV);
+      setUploadParsedLeads(parsed);
+      setUploadFileName('Pasted CSV text');
+    } catch (err: any) {
+      setUploadError(err.message || 'Failed to parse pasted CSV text.');
+      setUploadParsedLeads([]);
+    }
+  };
+
+  const handleConfirmImport = () => {
+    if (uploadParsedLeads.length === 0) return;
+    if (bulkAddCRMLeads) {
+      bulkAddCRMLeads(uploadParsedLeads);
+    } else {
+      uploadParsedLeads.forEach((lead) => addCRMLead(lead));
+    }
+    setShowUploadModal(false);
+    setActionNotice({
+      type: 'success',
+      message: `Successfully imported ${uploadParsedLeads.length} CRM lead agreements!`,
+    });
+    setTimeout(() => setActionNotice(null), 5000);
+    setUploadParsedLeads([]);
+    setUploadFileName('');
+    setRawPastedCSV('');
+  };
+
+  // Download Sample Template CSV
+  const handleDownloadSampleCSV = () => {
+    const sampleRows = [
+      'Client Name,Company Name,Phone,Stage,Expected Volume Units,Estimated Value BDT,Contract Term Months,Salesperson Name,Contact Date,Notes',
+      '"Grameenphone Telecom Power Backup","Grameenphone Limited","+880 1700-112233","Agreement Signed",500,57500000,24,"Tanvir Hossain","2026-10-15","Master supply contract for 48V 100Ah lithium iron phosphate packs"',
+      '"Banglalink Regional BTS Expansion","Banglalink Digital Communications","+880 1911-223344","Proposal Sent",350,42000000,24,"Tanvir Hossain","2026-10-25","Submitted technical proposal and credit pricing schedule"',
+      '"Robi Axiata Microgrid Storage","Robi Axiata Limited","+880 1819-998877","Contacted",200,24000000,12,"Zubair Ahmed","2026-10-20","Initial technical meeting completed for solar microgrid backup"',
+      '"Navana Logistics Fleet Energy","Navana Group","+880 1712-334455","Lead",150,18500000,18,"Tanvir Hossain","2026-10-28","Customer requested commercial price matrix and test unit"',
+    ];
+    const csvContent = sampleRows.join('\r\n');
+    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'ensec_crm_leads_template.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // Export Current Filtered Leads to CSV
+  const handleExportCSV = () => {
+    if (filteredDeals.length === 0) {
+      alert('No CRM agreements available to export under current filters.');
+      return;
+    }
+
+    const headers = [
+      'Agreement ID',
+      'Client / Project Name',
+      'Company Name',
+      'Phone',
+      'Pipeline Stage',
+      'Volume (Units)',
+      'Estimated Value (BDT)',
+      'Contract Term (Months)',
+      'Salesperson Name',
+      'Last Contact Date',
+      'Notes Count',
+      'Latest Communication Note',
+    ];
+
+    const escapeCSV = (val: any) => {
+      if (val === null || val === undefined) return '""';
+      const str = String(val).replace(/"/g, '""');
+      return `"${str}"`;
+    };
+
+    const rows = filteredDeals.map((deal) => {
+      const latestNote =
+        deal.communicationNotes && deal.communicationNotes.length > 0
+          ? deal.communicationNotes[deal.communicationNotes.length - 1].note
+          : '';
+
+      return [
+        escapeCSV(deal.id),
+        escapeCSV(deal.clientName),
+        escapeCSV(deal.companyName),
+        escapeCSV(deal.phone),
+        escapeCSV(deal.stage),
+        escapeCSV(deal.expectedVolumeUnits),
+        escapeCSV(deal.estimatedValueBDT),
+        escapeCSV(deal.contractTermMonths),
+        escapeCSV(deal.salespersonName),
+        escapeCSV(deal.lastContactDate || ''),
+        escapeCSV(deal.communicationNotes?.length || 0),
+        escapeCSV(latestNote),
+      ].join(',');
+    });
+
+    const csvData = [headers.join(','), ...rows].join('\r\n');
+    const blob = new Blob(['\uFEFF' + csvData], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const dateStamp = new Date().toISOString().substring(0, 10);
+    link.href = url;
+    link.setAttribute('download', `Ensec_CRM_Agreements_${dateStamp}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    setActionNotice({
+      type: 'success',
+      message: `Exported ${filteredDeals.length} CRM agreements to CSV file!`,
+    });
+    setTimeout(() => setActionNotice(null), 4000);
+  };
+
   const QUICK_TAGS = [
     'Price Negotiation',
     'Technical Specs',
@@ -201,6 +559,28 @@ export const CRMAgreementsPage: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {/* Toast Notice */}
+      {actionNotice && (
+        <div
+          className={`p-3.5 rounded-2xl border text-xs flex items-center justify-between gap-3 animate-in fade-in duration-200 shadow-sm ${
+            actionNotice.type === 'success'
+              ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
+              : 'bg-blue-50 dark:bg-blue-950/60 border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-200'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+            <span className="font-semibold">{actionNotice.message}</span>
+          </div>
+          <button
+            onClick={() => setActionNotice(null)}
+            className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -213,15 +593,47 @@ export const CRMAgreementsPage: React.FC = () => {
             <h1 className="text-xl font-bold text-slate-900 dark:text-white">
               CRM Agreements & Corporate Contracts
             </h1>
-            
           </div>
-          
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            Institutional client pipelines, multi-megawatt agreements, and corporate battery supply SLAs
+          </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        {/* Action Buttons: Upload CSV, Export CSV, New Agreement */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Upload Leads Button */}
+          <button
+            onClick={() => {
+              setShowUploadModal(true);
+              setUploadError(null);
+              setUploadParsedLeads([]);
+            }}
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-xl border border-teal-200 dark:border-teal-800/60 bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/40 dark:hover:bg-teal-900/40 text-teal-700 dark:text-teal-300 transition-colors shadow-2xs cursor-pointer"
+            title="Bulk import CRM leads from CSV file"
+          >
+            <Upload className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
+            <span>Upload Leads</span>
+          </button>
+
+          {/* Export CSV Button */}
+          <button
+            onClick={handleExportCSV}
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/60 text-slate-700 dark:text-slate-200 transition-colors shadow-2xs cursor-pointer"
+            title="Export currently filtered CRM agreements to CSV"
+          >
+            <Download className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
+            <span>Export CSV</span>
+            {filteredDeals.length > 0 && (
+              <span className="px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-[10px] font-mono text-slate-600 dark:text-slate-300 font-bold">
+                {filteredDeals.length}
+              </span>
+            )}
+          </button>
+
+          {/* New Agreement Button */}
           <button
             onClick={() => setShowAddDealModal(true)}
-            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-xl bg-blue-600 hover:bg-blue-700 text-white transition-colors shadow-sm"
+            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-xl bg-blue-600 hover:bg-blue-700 text-white transition-colors shadow-sm cursor-pointer"
           >
             <PlusCircle className="w-4 h-4" />
             <span>New Agreement</span>
@@ -245,7 +657,7 @@ export const CRMAgreementsPage: React.FC = () => {
             <span className="text-emerald-600 dark:text-emerald-400 font-semibold">{signedDeals.length} Signed</span>
             <span>•</span>
             <span className="text-blue-600 dark:text-blue-400 font-semibold">
-              {crmAgreements.filter((d) => d.stage === 'Proposal Sent').length} Proposals
+              {filteredDeals.filter((d) => d.stage === 'Proposal Sent').length} Proposals
             </span>
           </div>
         </div>
@@ -299,37 +711,123 @@ export const CRMAgreementsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Search & Filter Toolbar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs">
-        <div className="relative flex-1 max-w-md">
-          <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
-          <input
-            type="text"
-            placeholder="Search by client, company, phone, or salesperson..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20"
-          />
+      {/* Search, Date Filter & Stage Toolbar */}
+      <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs space-y-3.5">
+        {/* Row 1: Search and Date Filter Controls */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          {/* Search Box */}
+          <div className="relative flex-1 max-w-md">
+            <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search by client, company, phone, or salesperson..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20"
+            />
+            {searchTerm && (
+              <button
+                onClick={() => setSearchTerm('')}
+                className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Date Filter Bar */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs">
+              <Calendar className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+              <span className="text-slate-500 dark:text-slate-400 font-medium">Date Filter:</span>
+
+              {/* Quick Preset Selector */}
+              <select
+                value={datePreset}
+                onChange={(e) => applyDatePreset(e.target.value as DatePreset)}
+                className="bg-transparent text-slate-900 dark:text-white font-semibold text-xs focus:outline-none cursor-pointer"
+              >
+                <option value="all">All Time</option>
+                <option value="today">Today</option>
+                <option value="last7">Last 7 Days</option>
+                <option value="thisMonth">This Month</option>
+                <option value="last30">Last 30 Days</option>
+                <option value="thisYear">This Year</option>
+                <option value="custom">Custom Range...</option>
+              </select>
+            </div>
+
+            {/* From & To Date Pickers */}
+            <div className="flex items-center gap-1.5 text-xs">
+              <div className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+                <span className="text-[10px] font-bold text-slate-400 uppercase">From:</span>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => {
+                    setStartDate(e.target.value);
+                    setDatePreset('custom');
+                  }}
+                  className="bg-transparent text-xs text-slate-900 dark:text-white focus:outline-none font-mono"
+                />
+              </div>
+
+              <div className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+                <span className="text-[10px] font-bold text-slate-400 uppercase">To:</span>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => {
+                    setEndDate(e.target.value);
+                    setDatePreset('custom');
+                  }}
+                  className="bg-transparent text-xs text-slate-900 dark:text-white focus:outline-none font-mono"
+                />
+              </div>
+
+              {(startDate || endDate || datePreset !== 'all') && (
+                <button
+                  type="button"
+                  onClick={() => applyDatePreset('all')}
+                  className="p-1.5 rounded-xl text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  title="Clear Date Filter"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
         </div>
 
-        {/* Stage Filter Buttons */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 text-xs">
-          {['All', 'Lead', 'Contacted', 'Proposal Sent', 'Agreement Signed', 'Lost'].map((stg) => {
-            const isSelected = selectedStageFilter === stg;
-            return (
-              <button
-                key={stg}
-                onClick={() => setSelectedStageFilter(stg)}
-                className={`px-3 py-1.5 rounded-xl font-semibold whitespace-nowrap transition-colors ${
-                  isSelected
-                    ? 'bg-blue-600 text-white shadow-xs'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
-                }`}
-              >
-                {stg}
-              </button>
-            );
-          })}
+        {/* Row 2: Pipeline Stage Filter Tabs & Filter Counter */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0">
+            {['All', 'Lead', 'Contacted', 'Proposal Sent', 'Agreement Signed', 'Lost'].map((stg) => {
+              const isSelected = selectedStageFilter === stg;
+              return (
+                <button
+                  key={stg}
+                  onClick={() => setSelectedStageFilter(stg)}
+                  className={`px-3 py-1.5 rounded-xl font-semibold whitespace-nowrap transition-colors cursor-pointer ${
+                    isSelected
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  {stg}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+            <span>Showing <b className="text-slate-900 dark:text-white">{filteredDeals.length}</b> of {crmAgreements.length} leads</span>
+            {(startDate || endDate) && (
+              <span className="px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 font-mono text-[10px] font-bold">
+                📅 {startDate || 'Start'} → {endDate || 'Today'}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -348,17 +846,18 @@ export const CRMAgreementsPage: React.FC = () => {
           </div>
 
           {filteredDeals.length === 0 ? (
-            <div className="p-8 text-center bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800">
-              <FileSignature className="w-8 h-8 mx-auto text-slate-300 dark:text-slate-600 mb-2" />
-              <p className="text-xs text-slate-500">No agreements matching filters</p>
+            <div className="p-8 text-center bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-2">
+              <FileSignature className="w-8 h-8 mx-auto text-slate-300 dark:text-slate-600" />
+              <p className="text-xs text-slate-500 font-medium">No agreements match the selected search, stage, or date filters.</p>
               <button
                 onClick={() => {
                   setSearchTerm('');
                   setSelectedStageFilter('All');
+                  applyDatePreset('all');
                 }}
-                className="mt-2 text-xs font-semibold text-blue-600 hover:underline"
+                className="mt-1 text-xs font-semibold text-blue-600 hover:underline cursor-pointer"
               >
-                Reset filters
+                Reset all filters
               </button>
             </div>
           ) : (
@@ -386,7 +885,7 @@ export const CRMAgreementsPage: React.FC = () => {
                       </span>
                       <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
                         <Clock className="w-3 h-3" />
-                        {deal.lastContactDate}
+                        {deal.lastContactDate || 'Recent'}
                       </span>
                     </div>
 
@@ -449,16 +948,28 @@ export const CRMAgreementsPage: React.FC = () => {
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-2">
                     <span>🏢 {selectedDeal.companyName}</span>
                     <span>•</span>
-                    <span>📞 {selectedDeal.phone}</span>
-                    <span>•</span>
-                    <span>👤 Salesman: {selectedDeal.salespersonName}</span>
+                    <span className="font-mono">ID: {selectedDeal.id}</span>
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2 self-start sm:self-auto">
+                {/* Stage Mover Quick Dropdown */}
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-400 font-medium hidden sm:inline">Stage:</span>
+                  <select
+                    value={selectedDeal.stage}
+                    onChange={(e) => handleStageChange(selectedDeal.id, e.target.value as CRMLeadAgreement['stage'])}
+                    className="text-xs font-semibold py-1.5 px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none cursor-pointer"
+                  >
+                    <option value="Lead">Lead</option>
+                    <option value="Contacted">Contacted</option>
+                    <option value="Proposal Sent">Proposal Sent</option>
+                    <option value="Agreement Signed">Agreement Signed</option>
+                    <option value="Lost">Lost / Closed</option>
+                  </select>
+
                   <button
                     onClick={() => handleDelete(selectedDeal)}
-                    className="p-2 rounded-xl text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 border border-slate-200 dark:border-slate-800 transition-colors"
+                    className="p-1.5 rounded-xl text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
                     title="Delete Agreement"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -466,203 +977,423 @@ export const CRMAgreementsPage: React.FC = () => {
                 </div>
               </div>
 
-              {/* Stage Progress Bar / Quick Stage Switcher */}
-              <div className="space-y-2 p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/60">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                  Update Agreement Pipeline Stage:
-                </span>
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-1 text-xs">
-                  {(['Lead', 'Contacted', 'Proposal Sent', 'Agreement Signed', 'Lost'] as CRMLeadAgreement['stage'][]).map(
-                    (stg) => {
-                      const isCurrent = selectedDeal.stage === stg;
-                      return (
-                        <button
-                          key={stg}
-                          onClick={() => handleStageChange(selectedDeal.id, stg)}
-                          className={`px-2.5 py-1.5 rounded-lg font-semibold text-[11px] transition-all flex items-center justify-center gap-1.5 ${
-                            isCurrent
-                              ? 'bg-blue-600 text-white shadow-xs font-bold'
-                              : 'bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-100'
-                          }`}
-                        >
-                          {isCurrent && <Check className="w-3 h-3" />}
-                          <span>{stg}</span>
-                        </button>
-                      );
-                    }
-                  )}
-                </div>
-              </div>
-
-              {/* Deal Metrics Grid */}
+              {/* Key Agreement Parameters Grid */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60">
-                  <span className="text-[10px] text-slate-400 block font-sans">Agreement Value</span>
-                  <span className="text-base font-bold text-blue-600 dark:text-blue-400 font-mono">
+                <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Estimated Value</span>
+                  <span className="font-mono font-bold text-sm text-blue-600 dark:text-blue-400">
                     ৳ {selectedDeal.estimatedValueBDT.toLocaleString()}
                   </span>
-                  <span className="text-[10px] text-slate-400 block mt-0.5 font-mono">
-                    ≈ ৳ {(selectedDeal.estimatedValueBDT / 100000).toFixed(1)} Lakh
-                  </span>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60">
-                  <span className="text-[10px] text-slate-400 block font-sans">Volume Target</span>
-                  <span className="text-base font-bold text-slate-900 dark:text-white font-mono">
+                <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Contract Volume</span>
+                  <span className="font-mono font-bold text-sm text-slate-900 dark:text-white">
                     {selectedDeal.expectedVolumeUnits} Units
                   </span>
-                  <span className="text-[10px] text-slate-400 block mt-0.5">Lithium Battery Packs</span>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60">
-                  <span className="text-[10px] text-slate-400 block font-sans">Effective Rate / Unit</span>
-                  <span className="text-base font-bold text-emerald-600 dark:text-emerald-400 font-mono">
-                    ৳{' '}
-                    {selectedDeal.expectedVolumeUnits > 0
-                      ? Math.round(selectedDeal.estimatedValueBDT / selectedDeal.expectedVolumeUnits).toLocaleString()
-                      : 0}
-                  </span>
-                  <span className="text-[10px] text-slate-400 block mt-0.5">Contract negotiated</span>
-                </div>
-
-                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60">
-                  <span className="text-[10px] text-slate-400 block font-sans">Contract Term</span>
-                  <span className="text-base font-bold text-purple-600 dark:text-purple-400 font-mono">
+                <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Contract Term</span>
+                  <span className="font-mono font-bold text-sm text-slate-900 dark:text-white">
                     {selectedDeal.contractTermMonths} Months
                   </span>
-                  <span className="text-[10px] text-slate-400 block mt-0.5">SLA supply duration</span>
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Direct Contact</span>
+                  <span className="font-mono font-semibold text-xs text-slate-700 dark:text-slate-300 truncate block">
+                    {selectedDeal.phone}
+                  </span>
                 </div>
               </div>
 
-              {/* Communication Timeline & Interaction History */}
-              <div className="space-y-4">
-                <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
-                  <h3 className="font-bold text-xs uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
-                    <MessageSquare className="w-4 h-4 text-blue-500" />
-                    <span>Communication Logs & Interaction Timeline</span>
-                  </h3>
-                  <span className="text-[11px] text-slate-400">
-                    {selectedDeal.communicationNotes.length} entries
+              {/* Sales Rep Ownership Info */}
+              <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-full bg-blue-600/10 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold text-xs">
+                    {selectedDeal.salespersonName?.charAt(0) || 'U'}
+                  </div>
+                  <div>
+                    <span className="font-semibold text-slate-900 dark:text-white block">
+                      {selectedDeal.salespersonName}
+                    </span>
+                    <span className="text-[11px] text-slate-500">Corporate Field Account Manager</span>
+                  </div>
+                </div>
+                <div className="text-right text-[11px] text-slate-400">
+                  <span>Last Interaction: </span>
+                  <span className="font-mono font-semibold text-slate-700 dark:text-slate-300">
+                    {selectedDeal.lastContactDate || 'Recent'}
                   </span>
                 </div>
+              </div>
 
-                <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
-                  {selectedDeal.communicationNotes.length === 0 ? (
-                    <p className="text-xs text-slate-400 italic">No notes logged yet.</p>
-                  ) : (
-                    selectedDeal.communicationNotes.map((note, idx) => (
-                      <div
-                        key={idx}
-                        className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/60 space-y-1.5 text-xs"
-                      >
-                        <div className="flex items-center justify-between text-slate-500">
-                          <span className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                            <span className="w-6 h-6 rounded-full bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 flex items-center justify-center text-[10px]">
-                              {note.author.slice(0, 1)}
-                            </span>
-                            <span>{note.author}</span>
-                          </span>
-                          <span className="font-mono text-[10px] text-slate-400 flex items-center gap-1">
-                            <Calendar className="w-3 h-3" />
-                            {note.date}
-                          </span>
-                        </div>
-                        <p className="text-slate-700 dark:text-slate-300 leading-relaxed pl-7 whitespace-pre-wrap">
-                          {note.note}
-                        </p>
-                      </div>
-                    ))
-                  )}
+              {/* Communication Notes & SLA Tracking Log */}
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-bold text-xs uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    <span>Negotiation Timeline &amp; Communication Log ({selectedDeal.communicationNotes?.length || 0})</span>
+                  </h4>
                 </div>
 
-                {/* Add New Communication Log Form */}
-                <form
-                  onSubmit={handleAddNote}
-                  className="space-y-3 pt-3 border-t border-slate-200 dark:border-slate-800"
-                >
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-[10px] font-semibold text-slate-400">Quick Tags:</span>
+                {/* Add Note Form */}
+                <form onSubmit={handleAddNote} className="space-y-2">
+                  <div className="relative">
+                    <textarea
+                      rows={2}
+                      value={newNoteText}
+                      onChange={(e) => setNewNoteText(e.target.value)}
+                      placeholder="Log meeting minutes, pricing updates, test result approvals, or delivery milestones..."
+                      className="w-full p-3 pr-10 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!newNoteText.trim()}
+                      className="absolute right-2.5 bottom-3 p-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white cursor-pointer transition-colors"
+                      title="Post interaction note"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Quick Tag Pills */}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] font-semibold text-slate-400 uppercase">Tags:</span>
                     {QUICK_TAGS.map((tag) => (
                       <button
                         key={tag}
                         type="button"
                         onClick={() => setSelectedQuickTag(selectedQuickTag === tag ? '' : tag)}
-                        className={`px-2 py-0.5 rounded-md text-[10px] font-semibold transition-colors ${
+                        className={`text-[10px] px-2 py-0.5 rounded-lg border transition-colors cursor-pointer ${
                           selectedQuickTag === tag
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
+                            ? 'bg-blue-600 text-white border-blue-600'
+                            : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:border-slate-300'
                         }`}
                       >
-                        +{tag}
+                        {tag}
                       </button>
                     ))}
                   </div>
-
-                  <div className="space-y-2">
-                    <textarea
-                      rows={2}
-                      value={newNoteText}
-                      onChange={(e) => setNewNoteText(e.target.value)}
-                      placeholder={
-                        selectedQuickTag
-                          ? `[${selectedQuickTag}] Type meeting discussion, client technical requirement, or price agreed...`
-                          : 'Type salesman visit discussion, battery specs requested, or agreement status...'
-                      }
-                      className="w-full p-3 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20"
-                    />
-                    <div className="flex justify-end">
-                      <button
-                        type="submit"
-                        disabled={!newNoteText.trim()}
-                        className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold text-xs transition-colors shadow-xs"
-                      >
-                        <Send className="w-3.5 h-3.5" />
-                        <span>Log Communication</span>
-                      </button>
-                    </div>
-                  </div>
                 </form>
+
+                {/* Notes History Stream */}
+                <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1 pt-1">
+                  {selectedDeal.communicationNotes && selectedDeal.communicationNotes.length > 0 ? (
+                    selectedDeal.communicationNotes
+                      .slice()
+                      .reverse()
+                      .map((note, index) => (
+                        <div
+                          key={index}
+                          className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800 space-y-1 text-xs"
+                        >
+                          <div className="flex items-center justify-between text-[11px] text-slate-400">
+                            <span className="font-semibold text-slate-700 dark:text-slate-300">
+                              {note.author}
+                            </span>
+                            <span className="font-mono text-[10px]">{note.date}</span>
+                          </div>
+                          <p className="text-slate-700 dark:text-slate-300 leading-relaxed font-normal">
+                            {note.note}
+                          </p>
+                        </div>
+                      ))
+                  ) : (
+                    <div className="p-4 text-center text-xs text-slate-400 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl">
+                      No communication notes logged yet. Use the box above to register meeting updates.
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           ) : (
-            <div className="py-24 text-center text-slate-400 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800">
-              <FileSignature className="w-12 h-12 mx-auto text-slate-300 mb-2" />
-              <p className="text-xs font-semibold">Select an agreement from the left to view dossier</p>
+            <div className="p-12 text-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl text-slate-400">
+              <FileSignature className="w-12 h-12 mx-auto mb-3 opacity-30" />
+              <p className="text-sm font-semibold">Select an agreement to view detailed dossier</p>
             </div>
           )}
         </div>
       </div>
 
-      {/* Modal: New Agreement Lead */}
+      {/* MODAL 1: CSV LEAD UPLOAD MODAL */}
+      {showUploadModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in">
+          <div className="w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl p-6 space-y-5 max-h-[90vh] overflow-y-auto">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-teal-50 dark:bg-teal-950/60 border border-teal-200 dark:border-teal-800 text-teal-600 dark:text-teal-400 flex items-center justify-center">
+                  <Upload className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-slate-900 dark:text-white">
+                    Bulk Upload CRM Leads (CSV)
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Import institutional prospects, project agreements, and volume contracts from spreadsheet data
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowUploadModal(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Template Download & Instructions Banner */}
+            <div className="p-3.5 rounded-2xl bg-blue-50/70 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="flex items-start gap-2.5">
+                <FileSpreadsheet className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold text-blue-900 dark:text-blue-200">Need the standard spreadsheet template?</span>
+                  <p className="text-[11px] text-blue-700 dark:text-blue-300 mt-0.5">
+                    Download our formatted CSV template with required headers (Client Name, Company, Phone, Stage, Volume, Value BDT, Term, Notes).
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleDownloadSampleCSV}
+                className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs flex items-center gap-1.5 shadow-2xs whitespace-nowrap cursor-pointer shrink-0"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download Sample Template</span>
+              </button>
+            </div>
+
+            {/* Input Mode Toggle (File Drop vs Paste Text) */}
+            <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => setUploadInputMode('file')}
+                className={`py-1.5 rounded-lg transition-all cursor-pointer ${
+                  uploadInputMode === 'file'
+                    ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-xs'
+                    : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                📁 Select or Drop CSV File
+              </button>
+              <button
+                type="button"
+                onClick={() => setUploadInputMode('paste')}
+                className={`py-1.5 rounded-lg transition-all cursor-pointer ${
+                  uploadInputMode === 'paste'
+                    ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-xs'
+                    : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                📋 Paste CSV Raw Text
+              </button>
+            </div>
+
+            {/* Error Message */}
+            {uploadError && (
+              <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+                <span>{uploadError}</span>
+              </div>
+            )}
+
+            {/* Mode 1: Drag and Drop File Area */}
+            {uploadInputMode === 'file' && (
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setIsDragging(true);
+                }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsDragging(false);
+                  const files = e.dataTransfer.files;
+                  if (files && files[0]) {
+                    handleFileUpload(files[0]);
+                  }
+                }}
+                onClick={() => fileInputRef.current?.click()}
+                className={`p-8 rounded-2xl border-2 border-dashed text-center transition-all cursor-pointer ${
+                  isDragging
+                    ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-950/30'
+                    : 'border-slate-300 dark:border-slate-700 hover:border-slate-400 dark:hover:border-slate-600 bg-slate-50/50 dark:bg-slate-800/30'
+                }`}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".csv,text/csv,text/plain"
+                  className="hidden"
+                  onChange={(e) => {
+                    const files = e.target.files;
+                    if (files && files[0]) {
+                      handleFileUpload(files[0]);
+                    }
+                  }}
+                />
+                <FileUp className="w-10 h-10 mx-auto text-slate-400 mb-2" />
+                <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+                  {uploadFileName ? uploadFileName : 'Drag & drop your CSV file here, or click to browse'}
+                </p>
+                <p className="text-xs text-slate-400 mt-1">Supports UTF-8 CSV with header row</p>
+              </div>
+            )}
+
+            {/* Mode 2: Paste CSV Text */}
+            {uploadInputMode === 'paste' && (
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block">
+                  Paste Raw CSV Content:
+                </label>
+                <textarea
+                  rows={5}
+                  value={rawPastedCSV}
+                  onChange={(e) => setRawPastedCSV(e.target.value)}
+                  placeholder={`Client Name,Company Name,Phone,Stage,Expected Volume Units,Estimated Value BDT,Contract Term Months,Salesperson Name,Contact Date,Notes\n"Banglalink BTS","Banglalink","+880 1911-223344","Proposal Sent",350,42000000,24,"Tanvir Hossain","2026-10-25","Lead for telecom backup"`}
+                  className="w-full p-3 font-mono text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={handlePastedCSVSubmit}
+                  className="px-4 py-2 rounded-xl bg-slate-800 dark:bg-slate-700 hover:bg-slate-900 text-white text-xs font-semibold cursor-pointer"
+                >
+                  Parse Pasted Text
+                </button>
+              </div>
+            )}
+
+            {/* Parsed Preview Table */}
+            {uploadParsedLeads.length > 0 && (
+              <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>Parsed {uploadParsedLeads.length} leads successfully</span>
+                  </span>
+                  <span className="font-mono text-blue-600 dark:text-blue-400 font-bold">
+                    Total Pipeline: ৳{' '}
+                    {(
+                      uploadParsedLeads.reduce((sum, l) => sum + (l.estimatedValueBDT || 0), 0) / 100000
+                    ).toFixed(1)}{' '}
+                    Lakh
+                  </span>
+                </div>
+
+                <div className="max-h-56 overflow-y-auto border border-slate-200 dark:border-slate-800 rounded-xl">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-100 dark:bg-slate-800/80 sticky top-0 text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                      <tr>
+                        <th className="p-2">#</th>
+                        <th className="p-2">Client / Project</th>
+                        <th className="p-2">Company</th>
+                        <th className="p-2">Stage</th>
+                        <th className="p-2 text-right">Units</th>
+                        <th className="p-2 text-right">Value (BDT)</th>
+                        <th className="p-2">Salesperson</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-[11px]">
+                      {uploadParsedLeads.slice(0, 50).map((lead, idx) => (
+                        <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                          <td className="p-2 font-mono text-slate-400">{idx + 1}</td>
+                          <td className="p-2 font-semibold text-slate-900 dark:text-white truncate max-w-[140px]">
+                            {lead.clientName}
+                          </td>
+                          <td className="p-2 text-slate-600 dark:text-slate-300 truncate max-w-[120px]">
+                            {lead.companyName}
+                          </td>
+                          <td className="p-2">
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                              {lead.stage}
+                            </span>
+                          </td>
+                          <td className="p-2 text-right font-mono font-semibold">
+                            {lead.expectedVolumeUnits}
+                          </td>
+                          <td className="p-2 text-right font-mono font-bold text-blue-600 dark:text-blue-400">
+                            ৳ {lead.estimatedValueBDT?.toLocaleString()}
+                          </td>
+                          <td className="p-2 text-slate-500 truncate max-w-[100px]">
+                            {lead.salespersonName}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {uploadParsedLeads.length > 50 && (
+                  <p className="text-[11px] text-slate-400 text-center">
+                    Showing first 50 of {uploadParsedLeads.length} leads. All will be imported.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowUploadModal(false);
+                  setUploadParsedLeads([]);
+                  setUploadError(null);
+                }}
+                className="px-4 py-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold text-xs cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={uploadParsedLeads.length === 0}
+                onClick={handleConfirmImport}
+                className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-40 text-white font-semibold text-xs shadow-sm flex items-center gap-1.5 cursor-pointer"
+              >
+                <Check className="w-4 h-4" />
+                <span>Confirm &amp; Import {uploadParsedLeads.length} Leads</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: NEW AGREEMENT LEAD CREATOR */}
       {showAddDealModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="relative w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-6 space-y-4 text-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
+          <div className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl p-6 space-y-4 max-h-[90vh] overflow-y-auto text-xs">
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <FileSignature className="w-5 h-5 text-blue-600" />
-                <h3 className="font-bold text-base text-slate-900 dark:text-white">
+                <h3 className="font-bold text-sm text-slate-900 dark:text-white">
                   Register New CRM Agreement Lead
                 </h3>
               </div>
               <button
+                type="button"
                 onClick={() => setShowAddDealModal(false)}
-                className="text-slate-400 hover:text-slate-600 font-bold p-1"
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateDeal} className="space-y-4">
+            <form onSubmit={handleCreateDeal} className="space-y-3.5">
               <div>
                 <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">
-                  Agreement Title / Contact Person <span className="text-rose-500">*</span>
+                  Project / Agreement Title *
                 </label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Banglalink Tower Battery Bank Project"
                   value={dealClientName}
                   onChange={(e) => setDealClientName(e.target.value)}
+                  placeholder="e.g. Grameenphone Tower Battery Rollout"
                   className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
                 />
               </div>
@@ -670,28 +1401,28 @@ export const CRMAgreementsPage: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">
-                    Company / Organization <span className="text-rose-500">*</span>
+                    Company / Institutional Customer *
                   </label>
                   <input
                     type="text"
                     required
-                    placeholder="e.g. VEON / Banglalink BD"
                     value={dealCompanyName}
                     onChange={(e) => setDealCompanyName(e.target.value)}
+                    placeholder="e.g. Grameenphone Ltd."
                     className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
                   />
                 </div>
 
                 <div>
                   <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">
-                    Contact Phone Number <span className="text-rose-500">*</span>
+                    Contact Phone *
                   </label>
                   <input
                     type="text"
                     required
-                    placeholder="+880 1711-XXXXXX"
                     value={dealPhone}
                     onChange={(e) => setDealPhone(e.target.value)}
+                    placeholder="+880 1700-000000"
                     className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
                   />
                 </div>
@@ -746,11 +1477,11 @@ export const CRMAgreementsPage: React.FC = () => {
                   <select
                     value={dealStage}
                     onChange={(e) => setDealStage(e.target.value as CRMLeadAgreement['stage'])}
-                    className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                    className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white cursor-pointer"
                   >
                     <option value="Lead">Lead (Prospect Identified)</option>
                     <option value="Contacted">Contacted (Initial Pitch)</option>
-                    <option value="Proposal Sent">Proposal Sent (Technical & Commercial)</option>
+                    <option value="Proposal Sent">Proposal Sent (Technical &amp; Commercial)</option>
                     <option value="Agreement Signed">Agreement Signed (Contract Finalized)</option>
                     <option value="Lost">Lost / Archived</option>
                   </select>
@@ -786,13 +1517,13 @@ export const CRMAgreementsPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setShowAddDealModal(false)}
-                  className="px-4 py-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold"
+                  className="px-4 py-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-xs"
+                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-xs cursor-pointer"
                 >
                   Create Agreement Lead
                 </button>
