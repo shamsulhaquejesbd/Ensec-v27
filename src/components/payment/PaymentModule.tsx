@@ -44,6 +44,7 @@ export const PaymentModule: React.FC<PaymentModuleProps> = ({ initialTab = 'list
     approvePayment,
     rejectPayment,
     deletePayment,
+    clearPaymentsCache,
     salesOrders,
     distributors,
     departments,
@@ -59,11 +60,41 @@ export const PaymentModule: React.FC<PaymentModuleProps> = ({ initialTab = 'list
     setActiveTab(initialTab);
   }, [initialTab]);
 
+  // Purge any lingering sample or dummy payment records from local/session memory
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem('ensec_payments_sample');
+        sessionStorage.removeItem('ensec_payments_sample');
+        sessionStorage.removeItem('ensec_payments');
+        const stored = localStorage.getItem('ensec_payments');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) {
+            const nonSample = parsed.filter(
+              (p: any) =>
+                !p.id?.startsWith('pay-0') &&
+                !p.id?.startsWith('pay-1') &&
+                !p.tranNo?.startsWith('TRN-17917')
+            );
+            if (nonSample.length !== parsed.length) {
+              if (nonSample.length > 0) {
+                localStorage.setItem('ensec_payments', JSON.stringify(nonSample));
+              } else {
+                localStorage.removeItem('ensec_payments');
+              }
+            }
+          }
+        }
+      } catch (e) {}
+    }
+  }, []);
+
   // ==========================================
   // FILTERS STATE (Matching Image 1)
   // ==========================================
-  const [filterStartDate, setFilterStartDate] = useState<string>('2026-10-11');
-  const [filterEndDate, setFilterEndDate] = useState<string>('2026-10-11');
+  const [filterStartDate, setFilterStartDate] = useState<string>(() => new Date().toISOString().substring(0, 10));
+  const [filterEndDate, setFilterEndDate] = useState<string>(() => new Date().toISOString().substring(0, 10));
   const [filterStatus, setFilterStatus] = useState<string>('');
   const [filterDepartment, setFilterDepartment] = useState<string>('');
   const [filterDistributor, setFilterDistributor] = useState<string>('');
@@ -80,7 +111,7 @@ export const PaymentModule: React.FC<PaymentModuleProps> = ({ initialTab = 'list
   const [formDescription, setFormDescription] = useState<string>('');
 
   const [formDistributorId, setFormDistributorId] = useState<string>('');
-  const [formPaymentDate, setFormPaymentDate] = useState<string>('2026-10-11');
+  const [formPaymentDate, setFormPaymentDate] = useState<string>(() => new Date().toISOString().substring(0, 10));
   const [formInvoiceNo, setFormInvoiceNo] = useState<string>('');
   const [formAmount, setFormAmount] = useState<string>('');
   const [formDocumentImage, setFormDocumentImage] = useState<string>('');
@@ -101,6 +132,7 @@ export const PaymentModule: React.FC<PaymentModuleProps> = ({ initialTab = 'list
 
   const [rejectModalPayment, setRejectModalPayment] = useState<Payment | null>(null);
   const [rejectModalReason, setRejectModalReason] = useState<string>('');
+  const [previewImageModal, setPreviewImageModal] = useState<string | null>(null);
 
   // ==========================================
   // AGING CALCULATION HELPERS
@@ -242,24 +274,73 @@ export const PaymentModule: React.FC<PaymentModuleProps> = ({ initialTab = 'list
     }
   };
 
-  // Handle Document Image Upload
-  const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  // Handle Document Image Upload with automatic scaling & compression
+  const processImageFile = (file: File) => {
     if (!file) return;
 
-    if (file.size > 1024 * 1024) {
-      alert('File size exceeds 1MB limit. Please upload an image smaller than 1MB.');
+    if (!file.type.startsWith('image/')) {
+      setFormError('Please select a valid image file (PNG, JPG, JPEG, WEBP).');
       return;
     }
 
+    setFormError('');
     setFormDocumentImageName(file.name);
+
     const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setFormDocumentImage(reader.result);
-      }
+    reader.onload = (event) => {
+      const result = event.target?.result;
+      if (typeof result !== 'string') return;
+
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const maxDim = 1600;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height);
+            const compressed = canvas.toDataURL('image/jpeg', 0.85);
+            setFormDocumentImage(compressed);
+          } else {
+            setFormDocumentImage(result);
+          }
+        } catch {
+          setFormDocumentImage(result);
+        }
+      };
+      img.onerror = () => {
+        setFormDocumentImage(result);
+      };
+      img.src = result;
+    };
+    reader.onerror = () => {
+      setFormError('Failed to read image file. Please try again.');
     };
     reader.readAsDataURL(file);
+  };
+
+  const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processImageFile(file);
+    }
+    // Clear value so the same file or a replacement can be selected again
+    e.target.value = '';
   };
 
   // Quick Action from Aging tab to Pay Invoice
@@ -329,7 +410,7 @@ export const PaymentModule: React.FC<PaymentModuleProps> = ({ initialTab = 'list
       requestedBy: currentUser.name || 'Field Officer',
       requestedById: currentUser.id,
       paymentAmount: amt,
-      department: formDepartment || 'MOUSUMI NETWORK LTD',
+      department: formDepartment || (departments.length > 0 ? departments[0].name : 'Accounts'),
       paymentMode: formPaymentMode,
       chequeNoReceiptNo: formChequeNoReceiptNo || undefined,
       invoiceNo: formInvoiceNo || undefined,
@@ -558,6 +639,20 @@ export const PaymentModule: React.FC<PaymentModuleProps> = ({ initialTab = 'list
               </div>
 
               <div className="flex items-center gap-2">
+                {payments.length > 0 && (
+                  <button
+                    onClick={() => {
+                      if (window.confirm('Clear all stored payment memory and reset payments list?')) {
+                        clearPaymentsCache();
+                      }
+                    }}
+                    title="Clear local session payments data"
+                    className="px-3 py-2 rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/50 hover:bg-rose-100/70 dark:bg-rose-950/30 text-rose-700 dark:text-rose-300 font-semibold text-xs flex items-center gap-1.5 transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Clear Memory</span>
+                  </button>
+                )}
                 <button
                   onClick={() => setActiveTab('create')}
                   className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs flex items-center gap-1.5 shadow-xs transition-colors"
@@ -627,8 +722,6 @@ export const PaymentModule: React.FC<PaymentModuleProps> = ({ initialTab = 'list
                         {dept.name}
                       </option>
                     ))}
-                    <option value="HBL EXCLUSIVE">HBL EXCLUSIVE</option>
-                    <option value="MOUSUMI NETWORK LTD">MOUSUMI NETWORK LTD</option>
                   </select>
                 </div>
               </div>
@@ -718,8 +811,42 @@ export const PaymentModule: React.FC<PaymentModuleProps> = ({ initialTab = 'list
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80 font-medium">
                   {filteredPayments.length === 0 ? (
                     <tr>
-                      <td colSpan={13} className="p-8 text-center text-slate-400">
-                        No payments match the specified filter criteria.
+                      <td colSpan={13} className="py-12 px-4 text-center">
+                        <div className="flex flex-col items-center justify-center max-w-md mx-auto">
+                          <div className="w-12 h-12 rounded-2xl bg-sky-50 dark:bg-sky-950/60 border border-sky-100 dark:border-sky-800 text-sky-600 dark:text-sky-400 flex items-center justify-center mb-3 shadow-xs">
+                            <Receipt className="w-6 h-6" />
+                          </div>
+                          <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200 mb-1">
+                            {payments.length === 0 ? 'No Payment Records' : 'No Matching Payments Found'}
+                          </h3>
+                          <p className="text-xs text-slate-500 dark:text-slate-400 mb-4 text-center max-w-sm">
+                            {payments.length === 0
+                              ? 'All sample and local session memory payment data has been removed. Create a new collection voucher to record incoming payments.'
+                              : 'No transactions match the selected filters. Clear your filters or adjust the search criteria.'}
+                          </p>
+                          {payments.length === 0 ? (
+                            <button
+                              onClick={() => setActiveTab('create')}
+                              className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs flex items-center gap-1.5 shadow-xs transition-colors"
+                            >
+                              <PlusCircle className="w-4 h-4" />
+                              <span>+ Record First Payment</span>
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                setFilterStatus('');
+                                setFilterDepartment('');
+                                setFilterDistributor('');
+                                setFilterBank('');
+                                setFilterSearchTerm('');
+                              }}
+                              className="px-3.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-semibold"
+                            >
+                              Reset Filters
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ) : (
@@ -778,6 +905,17 @@ export const PaymentModule: React.FC<PaymentModuleProps> = ({ initialTab = 'list
                               >
                                 <X className="w-3.5 h-3.5" />
                               </button>
+
+                              {/* Attached Slip View Button */}
+                              {p.documentImage && (
+                                <button
+                                  onClick={() => setPreviewImageModal(p.documentImage || null)}
+                                  title="View Attached Slip / Cheque Image"
+                                  className="w-6 h-6 rounded flex items-center justify-center bg-violet-600 hover:bg-violet-700 text-white transition-colors shadow-2xs"
+                                >
+                                  <ImageIcon className="w-3.5 h-3.5" />
+                                </button>
+                              )}
                             </div>
                           </td>
 
@@ -943,9 +1081,6 @@ export const PaymentModule: React.FC<PaymentModuleProps> = ({ initialTab = 'list
                         {dept.name}
                       </option>
                     ))}
-                    <option value="HBL EXCLUSIVE">HBL EXCLUSIVE</option>
-                    <option value="MOUSUMI NETWORK LTD">MOUSUMI NETWORK LTD</option>
-                    <option value="EV MOBILITY CELLS">EV MOBILITY CELLS</option>
                   </select>
                 </div>
 
@@ -1174,56 +1309,102 @@ export const PaymentModule: React.FC<PaymentModuleProps> = ({ initialTab = 'list
                 {/* Document Image (Matching Image 2 exact wording) */}
                 <div>
                   <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                    Document Image
+                    Document Image (Deposit Slip / Cheque)
                   </label>
 
                   <div className="space-y-2">
                     <input
                       type="file"
                       ref={fileInputRef}
-                      accept="image/png,image/jpeg,image/jpg"
+                      accept="image/*"
                       onChange={handleImageFileChange}
                       className="hidden"
                     />
 
                     {!formDocumentImage ? (
-                      <div className="flex items-center gap-3">
-                        <button
-                          type="button"
-                          onClick={() => fileInputRef.current?.click()}
-                          className="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-2 transition-colors shadow-2xs"
-                        >
-                          <Upload className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                          <span>Upload image</span>
-                        </button>
-                        <span className="text-[11px] text-slate-400">Allowed PNG. Max size of 1MB</span>
-                      </div>
-                    ) : (
-                      <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-3 overflow-hidden">
-                          <img
-                            src={formDocumentImage}
-                            alt="Slip preview"
-                            className="w-10 h-10 object-cover rounded-lg border border-slate-200 dark:border-slate-700 shrink-0"
-                          />
-                          <div className="truncate">
-                            <span className="text-xs font-semibold text-slate-900 dark:text-white block truncate">
-                              {formDocumentImageName || 'Deposit_Slip.png'}
+                      <div
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          const file = e.dataTransfer.files?.[0];
+                          if (file) processImageFile(file);
+                        }}
+                        onClick={() => fileInputRef.current?.click()}
+                        className="cursor-pointer border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-blue-500 dark:hover:border-blue-500 rounded-xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-50/60 dark:bg-slate-800/40 hover:bg-blue-50/20 dark:hover:bg-slate-800/70 transition-all group"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-950/80 border border-blue-200 dark:border-blue-800 flex items-center justify-center text-blue-600 dark:text-blue-400 shrink-0 group-hover:scale-105 transition-transform">
+                            <Upload className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 block">
+                              Click to upload or drag & drop slip/cheque
                             </span>
-                            <span className="text-[10px] text-emerald-600">Attached successfully</span>
+                            <span className="text-[11px] text-slate-400">
+                              Supports JPG, PNG, WEBP, HEIC (Camera photos auto-optimized)
+                            </span>
                           </div>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setFormDocumentImage('');
-                            setFormDocumentImageName('');
-                          }}
-                          className="p-1 rounded text-slate-400 hover:text-rose-500"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
+                        <span className="px-3.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 shrink-0 shadow-2xs group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                          Browse File
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="p-3 rounded-xl border border-emerald-200 dark:border-emerald-800/70 bg-emerald-50/40 dark:bg-emerald-950/30 flex items-center justify-between gap-3 shadow-xs">
+                        <div className="flex items-center gap-3 overflow-hidden">
+                          <div
+                            onClick={() => setPreviewImageModal(formDocumentImage)}
+                            title="Click to view full image"
+                            className="relative group cursor-pointer shrink-0"
+                          >
+                            <img
+                              src={formDocumentImage}
+                              alt="Slip preview"
+                              className="w-14 h-14 object-cover rounded-lg border border-emerald-300 dark:border-emerald-700 shadow-2xs group-hover:opacity-90 transition-opacity"
+                            />
+                            <div className="absolute inset-0 bg-black/40 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-white">
+                              <Eye className="w-4 h-4" />
+                            </div>
+                          </div>
+                          <div className="truncate">
+                            <span className="text-xs font-bold text-slate-900 dark:text-white block truncate">
+                              {formDocumentImageName || 'Deposit_Receipt.jpg'}
+                            </span>
+                            <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1 mt-0.5">
+                              <CheckCircle2 className="w-3.5 h-3.5" /> Image attached & preview ready
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setPreviewImageModal(formDocumentImage)}
+                            className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shadow-2xs flex items-center gap-1"
+                          >
+                            <Eye className="w-3.5 h-3.5 text-blue-600" />
+                            <span>Preview</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shadow-2xs"
+                          >
+                            Change
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFormDocumentImage('');
+                              setFormDocumentImageName('');
+                            }}
+                            title="Remove attached image"
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 transition-colors"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1532,13 +1713,29 @@ export const PaymentModule: React.FC<PaymentModuleProps> = ({ initialTab = 'list
               {/* Document Image Preview */}
               {viewPaymentModal.documentImage && (
                 <div>
-                  <span className="text-slate-400 block mb-1">Attached Bank Slip / Receipt:</span>
-                  <div className="rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 max-h-48 flex items-center justify-center bg-slate-100 dark:bg-slate-800">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-slate-400 block text-xs">Attached Bank Slip / Receipt:</span>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewImageModal(viewPaymentModal.documentImage || null)}
+                      className="text-xs text-blue-600 dark:text-blue-400 font-semibold hover:underline flex items-center gap-1"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>View Full Size</span>
+                    </button>
+                  </div>
+                  <div
+                    onClick={() => setPreviewImageModal(viewPaymentModal.documentImage || null)}
+                    className="rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 max-h-52 flex items-center justify-center bg-slate-100 dark:bg-slate-800 cursor-pointer group relative"
+                  >
                     <img
                       src={viewPaymentModal.documentImage}
                       alt="Deposit Instrument"
-                      className="max-h-48 object-contain"
+                      className="max-h-52 object-contain group-hover:opacity-90 transition-opacity"
                     />
+                    <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-semibold gap-1.5">
+                      <Eye className="w-4 h-4" /> Click to enlarge
+                    </div>
                   </div>
                 </div>
               )}
@@ -1691,6 +1888,51 @@ export const PaymentModule: React.FC<PaymentModuleProps> = ({ initialTab = 'list
                 className="px-5 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-semibold text-xs shadow-xs"
               >
                 Confirm Rejection
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 4: FULL-SIZE DOCUMENT IMAGE PREVIEW                                  */}
+      {/* ========================================================================= */}
+      {previewImageModal && (
+        <div
+          onClick={() => setPreviewImageModal(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 animate-in fade-in duration-150"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-slate-900 rounded-2xl max-w-3xl w-full border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-150"
+          >
+            <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-800/60">
+              <div className="flex items-center gap-2">
+                <ImageIcon className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                <h3 className="font-bold text-sm text-slate-800 dark:text-slate-100">
+                  Document Instrument / Bank Slip Preview
+                </h3>
+              </div>
+              <button
+                onClick={() => setPreviewImageModal(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-slate-700/50 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 flex items-center justify-center bg-slate-950/20 max-h-[75vh] overflow-auto">
+              <img
+                src={previewImageModal}
+                alt="Enlarged Document Slip"
+                className="max-h-[70vh] w-auto object-contain rounded-lg shadow-md"
+              />
+            </div>
+            <div className="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 flex justify-end">
+              <button
+                onClick={() => setPreviewImageModal(null)}
+                className="px-4 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-xs font-semibold text-slate-800 dark:text-slate-100 transition-colors"
+              >
+                Close Preview
               </button>
             </div>
           </div>

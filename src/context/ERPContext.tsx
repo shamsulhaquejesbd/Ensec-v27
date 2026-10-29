@@ -363,6 +363,7 @@ interface ERPContextType {
   approvePayment: (paymentId: string, approvedAmount?: number, approvedNotes?: string) => void;
   rejectPayment: (paymentId: string, reason?: string) => void;
   deletePayment: (paymentId: string) => void;
+  clearPaymentsCache: () => void;
 
   // TADA Management
   tadaList: TADAEntry[];
@@ -813,7 +814,56 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog('SALES_ORDERS_CLEARED', 'Sales Orders', 'Cleared sales orders and session memory.');
   };
   const [requisitions, setRequisitions] = useState<Requisition[]>(INITIAL_REQUISITIONS);
-  const [payments, setPayments] = useState<Payment[]>(INITIAL_PAYMENTS);
+  const [payments, setPayments] = useState<Payment[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        // Clear any old sample payment keys
+        localStorage.removeItem('ensec_payments_sample');
+        sessionStorage.removeItem('ensec_payments_sample');
+        sessionStorage.removeItem('ensec_payments');
+
+        const stored = localStorage.getItem('ensec_payments');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) {
+            // Remove any legacy sample or mock records
+            const nonSample = parsed.filter(
+              (p: Payment) =>
+                !p.id?.startsWith('pay-0') &&
+                !p.id?.startsWith('pay-1') &&
+                !p.tranNo?.startsWith('TRN-17917') &&
+                !['Al Hera Telecom (Uttara)', 'Tazul Store (Mithachara Bazer)', 'Bismillah Enterprise (Bhulta, Narayanganj)', 'Makka Enterprise(Shorisabari)', 'M/S Hosain Traders (Gaibandha)', 'Pinky Distribution (Mymensingh)', 'M R Enterprise (Mohonpur)', 'Madina Enterprise (Nabinagar)', 'Mayer Dhuya Distribution (Trishal)', 'Madina Traders (Freeport)', 'Hanif Traders (Comilla)', 'My Stics(Moulobi Bazar, Dhaka)'].includes(p.outAccountName)
+            );
+            if (nonSample.length !== parsed.length) {
+              if (nonSample.length > 0) {
+                localStorage.setItem('ensec_payments', JSON.stringify(nonSample));
+              } else {
+                localStorage.removeItem('ensec_payments');
+                sessionStorage.removeItem('ensec_payments');
+              }
+            }
+            return nonSample;
+          }
+        }
+      } catch (e) {
+        console.warn('Notice parsing stored payments:', e);
+      }
+    }
+    return INITIAL_PAYMENTS;
+  });
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        if (payments.length > 0) {
+          localStorage.setItem('ensec_payments', JSON.stringify(payments));
+        } else {
+          localStorage.removeItem('ensec_payments');
+          sessionStorage.removeItem('ensec_payments');
+        }
+      } catch (e) {}
+    }
+  }, [payments]);
   const [tadaList, setTadaList] = useState<TADAEntry[]>(INITIAL_TADA_LIST);
   const [cashBook, setCashBook] = useState<CashBookEntry[]>(INITIAL_CASH_BOOK);
   const [payrollRecords, setPayrollRecords] = useState<PayrollRecord[]>(INITIAL_PAYROLL);
@@ -6850,6 +6900,19 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog('PAYMENT_DELETED', 'Payments Collection', `Deleted payment record ${target?.tranNo || paymentId}`);
   };
 
+  const clearPaymentsCache = () => {
+    setPayments([]);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem('ensec_payments');
+        sessionStorage.removeItem('ensec_payments');
+        localStorage.removeItem('ensec_payments_sample');
+        sessionStorage.removeItem('ensec_payments_sample');
+      } catch (e) {}
+    }
+    addAuditLog('PAYMENTS_CLEARED', 'Payments Collection', 'Cleared payment records and local session memory.');
+  };
+
   // Stage: TADA Management
   const addTADA = (entryData: Omit<TADAEntry, 'id' | 'createdAt' | 'lastModified'>): string => {
     const id = `tada-${Date.now().toString().slice(-6)}`;
@@ -8021,6 +8084,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         approvePayment,
         rejectPayment,
         deletePayment,
+        clearPaymentsCache,
         tadaList,
         addTADA,
         updateTADA,
