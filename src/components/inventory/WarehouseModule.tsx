@@ -202,9 +202,7 @@ export const WarehouseModule: React.FC = () => {
               <h2 className="font-bold text-sm text-slate-900 dark:text-white">
                 Inter-Warehouse Stock Transfer Logs
               </h2>
-              <p className="text-xs text-slate-500">
-                Kushtia Factory ➔ Dhaka Hub 1 (Tejgaon), Dhaka Hub 2 (Uttara), Chittagong Hub
-              </p>
+              
             </div>
           </div>
 

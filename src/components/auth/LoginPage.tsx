@@ -336,7 +336,7 @@ export const LoginPage: React.FC = () => {
             <span>Secure Access Gateway</span>
           </div>
           <h1 className="text-3xl sm:text-[34px] font-bold text-white tracking-tight">
-            Welcome
+            Welcome to ENSEC
           </h1>
           <p className="text-sm text-slate-300/80 font-normal mt-1.5">
             Sign in with your User ID and Password
@@ -444,17 +444,6 @@ export const LoginPage: React.FC = () => {
 
           {/* Account Enrollment and Corporate Notice */}
           <div className="pt-3 border-t border-white/10 space-y-3 text-center">
-            <button
-              type="button"
-              onClick={() => {
-                setShowRegisterModal(true);
-                setErrorMessage(null);
-              }}
-              className="w-full py-2.5 px-4 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/10 text-xs font-semibold text-slate-200 hover:text-white flex items-center justify-center gap-2 transition-all cursor-pointer"
-            >
-              <UserPlus className="w-3.5 h-3.5 text-teal-400" />
-              <span>Enroll New User ID & Password</span>
-            </button>
 
             <div className="flex items-center justify-center gap-1.5 text-[10px] text-slate-400 font-medium">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
