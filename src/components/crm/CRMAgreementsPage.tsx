@@ -89,6 +89,7 @@ export const CRMAgreementsPage: React.FC = () => {
     updateCRMDealStage,
     deleteCRMDeal,
     refreshCRMAgreements,
+    clearCRMAgreementsCache,
     currentUser,
   } = useERP();
 
@@ -99,8 +100,49 @@ export const CRMAgreementsPage: React.FC = () => {
   const [newNoteText, setNewNoteText] = useState('');
   const [selectedQuickTag, setSelectedQuickTag] = useState('');
 
-  // Initial load from Supabase if configured
+  // Initial load from Supabase & purge any legacy sample/local session memory
   React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        // Purge legacy sample/mock keys
+        localStorage.removeItem('ensec_crm_agreements_sample');
+        const stored = localStorage.getItem('ensec_crm_agreements');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) {
+            const hasLegacySample = parsed.some(
+              (p) =>
+                p.id === 'crm-01' ||
+                p.id === 'crm-02' ||
+                p.id === 'crm-03' ||
+                String(p.clientName || '').includes('Grameenphone') ||
+                String(p.clientName || '').includes('Summit Towers') ||
+                String(p.clientName || '').includes('Apex Battery')
+            );
+            if (hasLegacySample) {
+              const cleaned = parsed.filter(
+                (p) =>
+                  p.id !== 'crm-01' &&
+                  p.id !== 'crm-02' &&
+                  p.id !== 'crm-03' &&
+                  !String(p.clientName || '').includes('Grameenphone') &&
+                  !String(p.clientName || '').includes('Summit Towers') &&
+                  !String(p.clientName || '').includes('Apex Battery')
+              );
+              if (cleaned.length > 0) {
+                localStorage.setItem('ensec_crm_agreements', JSON.stringify(cleaned));
+              } else {
+                localStorage.removeItem('ensec_crm_agreements');
+                sessionStorage.removeItem('ensec_crm_agreements');
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Storage cleanup notice:', e);
+      }
+    }
+
     if (refreshCRMAgreements) {
       refreshCRMAgreements();
     }
@@ -122,6 +164,8 @@ export const CRMAgreementsPage: React.FC = () => {
   const [uploadInputMode, setUploadInputMode] = useState<'file' | 'paste'>('file');
   const [isImporting, setIsImporting] = useState(false);
   const [isSyncingAll, setIsSyncingAll] = useState(false);
+  const [isSavingNote, setIsSavingNote] = useState(false);
+  const [noteSaveNotice, setNoteSaveNotice] = useState<{ message: string; success: boolean } | null>(null);
 
   // Feedback Toast
   const [actionNotice, setActionNotice] = useState<{ type: 'success' | 'info'; message: string } | null>(null);
@@ -265,13 +309,32 @@ export const CRMAgreementsPage: React.FC = () => {
     setInitialNote('');
   };
 
-  const handleAddNote = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedDeal || !newNoteText.trim()) return;
+  const handleAddNote = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!selectedDeal || !newNoteText.trim() || isSavingNote) return;
     const finalNote = selectedQuickTag ? `[${selectedQuickTag}] ${newNoteText.trim()}` : newNoteText.trim();
-    addCRMCommunicationNote(selectedDeal.id, finalNote);
-    setNewNoteText('');
-    setSelectedQuickTag('');
+    setIsSavingNote(true);
+    setNoteSaveNotice({ message: 'Saving note to Supabase...', success: true });
+
+    try {
+      const res = await addCRMCommunicationNote(selectedDeal.id, finalNote);
+      setNewNoteText('');
+      setSelectedQuickTag('');
+      if (res?.isRemoteSynced) {
+        setNoteSaveNotice({ message: 'Saved to Supabase database', success: true });
+      } else if (res?.error) {
+        setNoteSaveNotice({ message: `Saved locally (${res.error})`, success: false });
+      } else {
+        setNoteSaveNotice({ message: 'Interaction note logged', success: true });
+      }
+      setTimeout(() => setNoteSaveNotice(null), 3500);
+    } catch (err: any) {
+      console.error('Error adding note:', err);
+      setNoteSaveNotice({ message: 'Save error: ' + (err?.message || 'Failed'), success: false });
+      setTimeout(() => setNoteSaveNotice(null), 4000);
+    } finally {
+      setIsSavingNote(false);
+    }
   };
 
   const handleStageChange = (dealId: string, newStage: CRMLeadAgreement['stage']) => {
@@ -519,6 +582,26 @@ export const CRMAgreementsPage: React.FC = () => {
     setTimeout(() => setActionNotice(null), 6000);
   };
 
+  const handleClearCache = async () => {
+    if (clearCRMAgreementsCache) {
+      clearCRMAgreementsCache();
+    }
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem('ensec_crm_agreements');
+        sessionStorage.removeItem('ensec_crm_agreements');
+      } catch (e) {}
+    }
+    if (refreshCRMAgreements) {
+      await refreshCRMAgreements();
+    }
+    setActionNotice({
+      type: 'info',
+      message: 'Local session cache purged. Refreshed live data from Supabase.',
+    });
+    setTimeout(() => setActionNotice(null), 5000);
+  };
+
 
   // Download Sample Template CSV
   const handleDownloadSampleCSV = () => {
@@ -656,9 +739,7 @@ export const CRMAgreementsPage: React.FC = () => {
               CRM Agreements & Corporate Contracts
             </h1>
           </div>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Institutional client pipelines, multi-megawatt agreements, and corporate battery supply SLAs
-          </p>
+        
         </div>
 
         {/* Action Buttons: Upload CSV, Export CSV, New Agreement */}
@@ -690,17 +771,6 @@ export const CRMAgreementsPage: React.FC = () => {
                 {filteredDeals.length}
               </span>
             )}
-          </button>
-
-          {/* Sync to Supabase Button */}
-          <button
-            onClick={handleSyncAllToSupabase}
-            disabled={isSyncingAll}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-xl border border-emerald-200 dark:border-emerald-800/60 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 transition-colors shadow-2xs cursor-pointer disabled:opacity-50"
-            title="Push and synchronize all CRM agreements to Supabase crm_agreements table"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 ${isSyncingAll ? 'animate-spin' : ''}`} />
-            <span>{isSyncingAll ? 'Syncing...' : 'Sync to Supabase'}</span>
           </button>
 
           {/* New Agreement Button */}
@@ -918,7 +988,39 @@ export const CRMAgreementsPage: React.FC = () => {
             <span className="text-[11px] text-slate-400">Click to view details</span>
           </div>
 
-          {filteredDeals.length === 0 ? (
+          {crmAgreements.length === 0 ? (
+            <div className="p-8 text-center bg-white dark:bg-slate-900 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 space-y-3">
+              <div className="w-10 h-10 rounded-2xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 flex items-center justify-center mx-auto">
+                <FileSignature className="w-5 h-5" />
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm font-bold text-slate-800 dark:text-slate-200">No CRM Lead Agreements</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xs mx-auto">
+                  Sample and session dummy data have been removed. Upload real leads via CSV or create your first agreement to sync with Supabase.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                <button
+                  onClick={() => {
+                    setShowUploadModal(true);
+                    setUploadError(null);
+                    setUploadParsedLeads([]);
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Upload Leads (CSV)</span>
+                </button>
+                <button
+                  onClick={() => setShowAddDealModal(true)}
+                  className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <PlusCircle className="w-3.5 h-3.5" />
+                  <span>New Agreement</span>
+                </button>
+              </div>
+            </div>
+          ) : filteredDeals.length === 0 ? (
             <div className="p-8 text-center bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-2">
               <FileSignature className="w-8 h-8 mx-auto text-slate-300 dark:text-slate-600" />
               <p className="text-xs text-slate-500 font-medium">No agreements match the selected search, stage, or date filters.</p>
@@ -1109,6 +1211,23 @@ export const CRMAgreementsPage: React.FC = () => {
                     <MessageSquare className="w-3.5 h-3.5" />
                     <span>Negotiation Timeline &amp; Communication Log ({selectedDeal.communicationNotes?.length || 0})</span>
                   </h4>
+                  {noteSaveNotice ? (
+                    <span
+                      className={`text-[11px] font-semibold px-2 py-0.5 rounded-md flex items-center gap-1 transition-all ${
+                        noteSaveNotice.success
+                          ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                          : 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800'
+                      }`}
+                    >
+                      <span className={`w-1.5 h-1.5 rounded-full ${noteSaveNotice.success ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
+                      {noteSaveNotice.message}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1 font-medium bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-900">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                      Supabase Cloud Sync
+                    </span>
+                  )}
                 </div>
 
                 {/* Add Note Form */}
@@ -1118,16 +1237,26 @@ export const CRMAgreementsPage: React.FC = () => {
                       rows={2}
                       value={newNoteText}
                       onChange={(e) => setNewNoteText(e.target.value)}
-                      placeholder="Log meeting minutes, pricing updates, test result approvals, or delivery milestones..."
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleAddNote();
+                        }
+                      }}
+                      placeholder="Type a communication note, pricing discussion, or meeting summary (Press Enter to post)..."
                       className="w-full p-3 pr-10 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20"
                     />
                     <button
                       type="submit"
-                      disabled={!newNoteText.trim()}
+                      disabled={!newNoteText.trim() || isSavingNote}
                       className="absolute right-2.5 bottom-3 p-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white cursor-pointer transition-colors"
-                      title="Post interaction note"
+                      title={isSavingNote ? 'Saving to Supabase...' : 'Post interaction note (Enter to send)'}
                     >
-                      <Send className="w-3.5 h-3.5" />
+                      {isSavingNote ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Send className="w-3.5 h-3.5" />
+                      )}
                     </button>
                   </div>
 
@@ -1182,9 +1311,16 @@ export const CRMAgreementsPage: React.FC = () => {
               </div>
             </div>
           ) : (
-            <div className="p-12 text-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl text-slate-400">
-              <FileSignature className="w-12 h-12 mx-auto mb-3 opacity-30" />
-              <p className="text-sm font-semibold">Select an agreement to view detailed dossier</p>
+            <div className="p-12 text-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl text-slate-400 space-y-2">
+              <FileSignature className="w-12 h-12 mx-auto mb-2 opacity-30 text-slate-400" />
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                {crmAgreements.length === 0 ? 'CRM Pipeline is Clean' : 'Select an agreement to view detailed dossier'}
+              </p>
+              <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                {crmAgreements.length === 0
+                  ? 'No sample or cached dummy data is loaded. Use Upload Leads (CSV) or New Agreement to populate live agreements in Supabase.'
+                  : 'Click any deal card from the left panel to examine communication history, stage progressions, and contract terms.'}
+              </p>
             </div>
           )}
         </div>

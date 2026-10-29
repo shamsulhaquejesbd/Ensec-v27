@@ -450,59 +450,7 @@ export const INITIAL_DISTRIBUTORS: Distributor[] = [];
 
 export const INITIAL_CUSTOMERS: Customer[] = [];
 
-export const INITIAL_CRM_AGREEMENTS: CRMLeadAgreement[] = [
-  {
-    id: 'crm-01',
-    clientName: 'Grameenphone Ltd. (Tower Energy Procurement)',
-    companyName: 'Grameenphone Limited',
-    phone: '+880 1700-112233',
-    stage: 'Agreement Signed',
-    expectedVolumeUnits: 500,
-    estimatedValueBDT: 57500000,
-    contractTermMonths: 24,
-    salespersonId: 'u-2',
-    salespersonName: 'Tanvir Hossain',
-    lastContactDate: '2026-10-04',
-    communicationNotes: [
-      { date: '2026-09-10', author: 'Tanvir Hossain', note: 'Technical evaluation of ET-48100 48V 100Ah battery bank passed GP laboratory bench test.' },
-      { date: '2026-09-25', author: 'Engr. Sohidul Islam', note: 'Commercial terms finalized: 60-month warranty and 45-day payment credit cycle.' },
-      { date: '2026-10-02', author: 'Tanvir Hossain', note: 'Master Service Agreement signed. Initial rollout batch of 50 units scheduled for Dhaka hub.' },
-    ],
-  },
-  {
-    id: 'crm-02',
-    clientName: 'Summit Towers Bangladesh',
-    companyName: 'Summit Communications Ltd.',
-    phone: '+880 1819-445566',
-    stage: 'Proposal Sent',
-    expectedVolumeUnits: 200,
-    estimatedValueBDT: 23000000,
-    contractTermMonths: 12,
-    salespersonId: 'u-2',
-    salespersonName: 'Tanvir Hossain',
-    lastContactDate: '2026-10-06',
-    communicationNotes: [
-      { date: '2026-09-28', author: 'Tanvir Hossain', note: 'Presented live telemetry capabilities of Ensec smart CAN/RS485 BMS integration.' },
-      { date: '2026-10-05', author: 'Tanvir Hossain', note: 'Submitted proposal with bulk slab discount of 4.5%.' },
-    ],
-  },
-  {
-    id: 'crm-03',
-    clientName: 'Apex Battery World (Khulna & Jessore Belt)',
-    companyName: 'Apex Automotive & Energy',
-    phone: '+880 1912-778899',
-    stage: 'Contacted',
-    expectedVolumeUnits: 80,
-    estimatedValueBDT: 4640000,
-    contractTermMonths: 12,
-    salespersonId: 'u-6',
-    salespersonName: 'Zubair Ahmed',
-    lastContactDate: '2026-10-05',
-    communicationNotes: [
-      { date: '2026-10-05', author: 'Zubair Ahmed', note: 'Dealer visited in Jessore. Interested in stocking E-Drive 60V 50Ah lithium packs.' },
-    ],
-  },
-];
+export const INITIAL_CRM_AGREEMENTS: CRMLeadAgreement[] = [];
 
 export const INITIAL_FIELD_FORCE: FieldForceRep[] = [];
 

@@ -305,6 +305,7 @@ interface ERPContextType {
   updateCRMDealStage: (dealId: string, stage: CRMLeadAgreement['stage']) => Promise<{ success: boolean; error?: string }> | any;
   deleteCRMDeal: (dealId: string) => Promise<{ success: boolean; error?: string }> | any;
   refreshCRMAgreements?: () => Promise<void>;
+  clearCRMAgreementsCache?: () => void;
 
   // Field Force & GPS
   fieldForceReps: FieldForceRep[];
@@ -714,7 +715,40 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     return INITIAL_CUSTOMER_CATEGORIES;
   });
-  const [crmAgreements, setCrmAgreements] = useState<CRMLeadAgreement[]>(INITIAL_CRM_AGREEMENTS);
+  const [crmAgreements, setCrmAgreements] = useState<CRMLeadAgreement[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('ensec_crm_agreements') || sessionStorage.getItem('ensec_crm_agreements');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) {
+            // Remove any legacy sample or mock records
+            const nonSample = parsed.filter(
+              (item: any) =>
+                item.id !== 'crm-01' &&
+                item.id !== 'crm-02' &&
+                item.id !== 'crm-03' &&
+                !String(item.clientName || '').includes('Grameenphone') &&
+                !String(item.clientName || '').includes('Summit Towers') &&
+                !String(item.clientName || '').includes('Apex Battery')
+            );
+            if (nonSample.length !== parsed.length) {
+              if (nonSample.length > 0) {
+                localStorage.setItem('ensec_crm_agreements', JSON.stringify(nonSample));
+              } else {
+                localStorage.removeItem('ensec_crm_agreements');
+                sessionStorage.removeItem('ensec_crm_agreements');
+              }
+            }
+            return nonSample;
+          }
+        }
+      } catch (e) {
+        console.warn('Notice parsing stored CRM agreements:', e);
+      }
+    }
+    return [];
+  });
   const [fieldForceReps, setFieldForceReps] = useState<FieldForceRep[]>(() => {
     if (typeof window !== 'undefined' && checkSupabaseConfigured()) {
       return [];
@@ -1889,7 +1923,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           .select('*')
           .order('id', { ascending: false });
 
-        if (!error && Array.isArray(data) && data.length > 0) {
+        if (!error && Array.isArray(data)) {
           const mapped: CRMLeadAgreement[] = data.map((row: any) => ({
             id: row.deal_code ? String(row.deal_code) : `crm-${row.id}`,
             clientName: row.client_name || row.company_name || 'Corporate Lead',
@@ -1911,12 +1945,27 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }));
           setCrmAgreements(mapped);
           if (typeof window !== 'undefined') {
-            localStorage.setItem('ensec_crm_agreements', JSON.stringify(mapped));
+            if (mapped.length > 0) {
+              localStorage.setItem('ensec_crm_agreements', JSON.stringify(mapped));
+            } else {
+              localStorage.removeItem('ensec_crm_agreements');
+              sessionStorage.removeItem('ensec_crm_agreements');
+            }
           }
         }
       } catch (err) {
         console.warn('Supabase refreshCRMAgreements notice:', err);
       }
+    }
+  };
+
+  const clearCRMAgreementsCache = () => {
+    setCrmAgreements([]);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem('ensec_crm_agreements');
+        sessionStorage.removeItem('ensec_crm_agreements');
+      } catch (e) {}
     }
   };
 
@@ -5421,8 +5470,19 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const newDeal: CRMLeadAgreement = {
       ...lead,
       id,
+      clientName: (lead.clientName || lead.companyName || 'Corporate Lead').trim(),
+      companyName: (lead.companyName || lead.clientName || 'Corporate Lead').trim(),
+      phone: (lead.phone || '+880 1700-000000').trim(),
     };
-    setCrmAgreements((prev) => [newDeal, ...prev]);
+    setCrmAgreements((prev) => {
+      const next = [newDeal, ...prev];
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('ensec_crm_agreements', JSON.stringify(next));
+        } catch (e) {}
+      }
+      return next;
+    });
     addAuditLog(
       'CRM_DEAL_CREATED',
       'CRM & Agreements',
@@ -5437,19 +5497,19 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         const payload = {
           deal_code: id,
-          client_name: newDeal.clientName,
-          company_name: newDeal.companyName,
-          contact_person: newDeal.contactPerson || null,
-          phone: newDeal.phone,
-          email: newDeal.email || null,
-          channel: newDeal.channel || 'Direct Corporate',
+          client_name: (newDeal.clientName || newDeal.companyName || 'Corporate Lead').trim(),
+          company_name: (newDeal.companyName || newDeal.clientName || 'Corporate Lead').trim(),
+          contact_person: (newDeal as any).contactPerson || null,
+          phone: (newDeal.phone || '+880 1700-000000').trim(),
+          email: (newDeal as any).email || null,
+          channel: (newDeal as any).channel || 'Direct Corporate',
           stage: newDeal.stage || 'Lead',
           expected_volume_units: Number(newDeal.expectedVolumeUnits) || 100,
-          estimated_value_bdt: Number(newDeal.estimatedValueBDT) || 0,
+          estimated_value_bdt: Number(newDeal.estimatedValueBDT || newDeal.dealValueBDT) || 0,
           deal_value_bdt: Number(newDeal.dealValueBDT || newDeal.estimatedValueBDT) || 0,
           contract_term_months: Number(newDeal.contractTermMonths) || 12,
-          salesperson_id: newDeal.salespersonId || null,
-          salesperson_name: newDeal.salespersonName || 'Tanvir Hossain',
+          salesperson_id: (newDeal as any).salespersonId || null,
+          salesperson_name: newDeal.salespersonName || currentUser.name || 'Tanvir Hossain',
           last_contact_date: newDeal.lastContactDate || new Date().toISOString().substring(0, 10),
           communication_notes: newDeal.communicationNotes || [],
           status: 'Active',
@@ -5476,8 +5536,19 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const newDeals: CRMLeadAgreement[] = leads.map((lead, idx) => ({
       ...lead,
       id: `CRM-${timestamp}-${idx + 1}`,
+      clientName: (lead.clientName || lead.companyName || `Lead ${idx + 1}`).trim(),
+      companyName: (lead.companyName || lead.clientName || `Lead ${idx + 1}`).trim(),
+      phone: (lead.phone || '+880 1700-000000').trim(),
     }));
-    setCrmAgreements((prev) => [...newDeals, ...prev]);
+    setCrmAgreements((prev) => {
+      const next = [...newDeals, ...prev];
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('ensec_crm_agreements', JSON.stringify(next));
+        } catch (e) {}
+      }
+      return next;
+    });
     addAuditLog(
       'CRM_BULK_UPLOAD',
       'CRM & Agreements',
@@ -5492,19 +5563,19 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         const payload = newDeals.map((d) => ({
           deal_code: d.id,
-          client_name: d.clientName,
-          company_name: d.companyName,
-          contact_person: d.contactPerson || null,
-          phone: d.phone,
-          email: d.email || null,
-          channel: d.channel || 'Direct Corporate',
+          client_name: (d.clientName || d.companyName || 'Corporate Lead').trim(),
+          company_name: (d.companyName || d.clientName || 'Corporate Lead').trim(),
+          contact_person: (d as any).contactPerson || null,
+          phone: (d.phone || '+880 1700-000000').trim(),
+          email: (d as any).email || null,
+          channel: (d as any).channel || 'Direct Corporate',
           stage: d.stage || 'Lead',
           expected_volume_units: Number(d.expectedVolumeUnits) || 100,
-          estimated_value_bdt: Number(d.estimatedValueBDT) || 0,
+          estimated_value_bdt: Number(d.estimatedValueBDT || d.dealValueBDT) || 0,
           deal_value_bdt: Number(d.dealValueBDT || d.estimatedValueBDT) || 0,
           contract_term_months: Number(d.contractTermMonths) || 12,
-          salesperson_id: d.salespersonId || null,
-          salesperson_name: d.salespersonName || 'Tanvir Hossain',
+          salesperson_id: (d as any).salespersonId || null,
+          salesperson_name: d.salespersonName || currentUser.name || 'Tanvir Hossain',
           last_contact_date: d.lastContactDate || new Date().toISOString().substring(0, 10),
           communication_notes: d.communicationNotes || [],
           status: 'Active',
@@ -5535,19 +5606,19 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const payload = crmAgreements.map((d) => ({
         deal_code: d.id,
-        client_name: d.clientName,
-        company_name: d.companyName,
-        contact_person: d.contactPerson || null,
-        phone: d.phone,
-        email: d.email || null,
-        channel: d.channel || 'Direct Corporate',
+        client_name: (d.clientName || d.companyName || 'Corporate Lead').trim(),
+        company_name: (d.companyName || d.clientName || 'Corporate Lead').trim(),
+        contact_person: (d as any).contactPerson || null,
+        phone: (d.phone || '+880 1700-000000').trim(),
+        email: (d as any).email || null,
+        channel: (d as any).channel || 'Direct Corporate',
         stage: d.stage || 'Lead',
         expected_volume_units: Number(d.expectedVolumeUnits) || 100,
-        estimated_value_bdt: Number(d.estimatedValueBDT) || 0,
+        estimated_value_bdt: Number(d.estimatedValueBDT || d.dealValueBDT) || 0,
         deal_value_bdt: Number(d.dealValueBDT || d.estimatedValueBDT) || 0,
         contract_term_months: Number(d.contractTermMonths) || 12,
-        salesperson_id: d.salespersonId || null,
-        salesperson_name: d.salespersonName || 'Tanvir Hossain',
+        salesperson_id: (d as any).salespersonId || null,
+        salesperson_name: d.salespersonName || currentUser.name || 'Tanvir Hossain',
         last_contact_date: d.lastContactDate || new Date().toISOString().substring(0, 10),
         communication_notes: d.communicationNotes || [],
         status: 'Active',
@@ -5565,82 +5636,243 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addCRMCommunicationNote = async (dealId: string, noteText: string) => {
-    let updatedDeal: CRMLeadAgreement | undefined = undefined;
-    setCrmAgreements((prev) =>
-      prev.map((deal) => {
-        if (deal.id === dealId) {
-          const noteObj = {
-            date: new Date().toISOString().substring(0, 10),
-            author: currentUser.name,
-            note: noteText,
-          };
-          updatedDeal = {
-            ...deal,
-            lastContactDate: noteObj.date,
-            communicationNotes: [...(deal.communicationNotes || []), noteObj],
-          };
-          return updatedDeal;
-        }
-        return deal;
-      })
+    const trimmed = (noteText || '').trim();
+    if (!trimmed) {
+      return { success: false, error: 'Note text cannot be empty' };
+    }
+
+    const noteObj = {
+      date: new Date().toISOString().substring(0, 10),
+      author: currentUser.name || 'Admin',
+      note: trimmed,
+    };
+
+    const dealCodeStr = String(dealId || '').trim();
+    const currentDeal = crmAgreements.find(
+      (d) =>
+        d.id === dealCodeStr ||
+        d.id?.toLowerCase() === dealCodeStr.toLowerCase() ||
+        String((d as any).deal_code || '').toLowerCase() === dealCodeStr.toLowerCase()
     );
-    addAuditLog('CRM_NOTE_ADDED', 'CRM & Agreements', `Added interaction note for agreement ID ${dealId}`);
+
+    const updatedNotes = currentDeal?.communicationNotes
+      ? [...currentDeal.communicationNotes, noteObj]
+      : [noteObj];
+
+    const updatedDeal: CRMLeadAgreement = currentDeal
+      ? {
+          ...currentDeal,
+          lastContactDate: noteObj.date,
+          communicationNotes: updatedNotes,
+        }
+      : {
+          id: dealCodeStr,
+          clientName: 'Corporate Lead',
+          companyName: dealCodeStr,
+          phone: '+880 1700-000000',
+          stage: 'Lead',
+          expectedVolumeUnits: 100,
+          estimatedValueBDT: 0,
+          dealValueBDT: 0,
+          contractTermMonths: 12,
+          salespersonName: currentUser.name || 'Tanvir Hossain',
+          lastContactDate: noteObj.date,
+          communicationNotes: updatedNotes,
+        };
+
+    // 1. Instantly update React state & localStorage
+    setCrmAgreements((prev) => {
+      const matchIdx = prev.findIndex(
+        (d) =>
+          d.id === dealCodeStr ||
+          d.id?.toLowerCase() === dealCodeStr.toLowerCase() ||
+          String((d as any).deal_code || '').toLowerCase() === dealCodeStr.toLowerCase()
+      );
+      const next = matchIdx >= 0
+        ? prev.map((d, idx) => (idx === matchIdx ? updatedDeal : d))
+        : [updatedDeal, ...prev];
+
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('ensec_crm_agreements', JSON.stringify(next));
+        } catch (e) {}
+      }
+      return next;
+    });
+
+    addAuditLog(
+      'CRM_NOTE_ADDED',
+      'CRM & Agreements',
+      `Added interaction note for agreement ${dealCodeStr}: "${trimmed.slice(0, 40)}"`
+    );
+
+    // 2. Persist to Supabase
+    let isRemoteSynced = false;
+    let syncError: string | undefined = undefined;
 
     const sb = getSupabase();
-    if (sb && updatedDeal) {
-      const d: CRMLeadAgreement = updatedDeal;
+    if (sb) {
       try {
-        await sb
+        // Attempt A: Case-insensitive match on deal_code
+        const { data: updatedRows, error: updateErr } = await sb
           .from('crm_agreements')
           .update({
-            last_contact_date: d.lastContactDate,
-            communication_notes: d.communicationNotes,
+            last_contact_date: noteObj.date,
+            communication_notes: updatedNotes,
             updated_at: new Date().toISOString(),
           })
-          .eq('deal_code', dealId);
-      } catch (e) {
+          .ilike('deal_code', dealCodeStr)
+          .select();
+
+        if (!updateErr && updatedRows && updatedRows.length > 0) {
+          isRemoteSynced = true;
+        } else {
+          // Attempt B: Match by numeric primary key ID if dealId ends in numbers
+          const numericId = dealCodeStr.replace(/^crm-?/i, '');
+          if (/^\d+$/.test(numericId)) {
+            const { data: numRows, error: numErr } = await sb
+              .from('crm_agreements')
+              .update({
+                last_contact_date: noteObj.date,
+                communication_notes: updatedNotes,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', Number(numericId))
+              .select();
+
+            if (!numErr && numRows && numRows.length > 0) {
+              isRemoteSynced = true;
+            }
+          }
+
+          // Attempt C: If row does not exist in Supabase yet, upsert it so it is permanently created
+          if (!isRemoteSynced) {
+            const payload = {
+              deal_code: updatedDeal.id,
+              client_name: (updatedDeal.clientName || updatedDeal.companyName || 'Corporate Lead').trim(),
+              company_name: (updatedDeal.companyName || updatedDeal.clientName || 'Corporate Lead').trim(),
+              contact_person: (updatedDeal as any).contactPerson || null,
+              phone: (updatedDeal.phone || '+880 1700-000000').trim(),
+              email: (updatedDeal as any).email || null,
+              channel: (updatedDeal as any).channel || 'Direct Corporate',
+              stage: updatedDeal.stage || 'Lead',
+              expected_volume_units: Number(updatedDeal.expectedVolumeUnits) || 100,
+              estimated_value_bdt: Number(updatedDeal.estimatedValueBDT || updatedDeal.dealValueBDT) || 0,
+              deal_value_bdt: Number(updatedDeal.dealValueBDT || updatedDeal.estimatedValueBDT) || 0,
+              contract_term_months: Number(updatedDeal.contractTermMonths) || 12,
+              salesperson_name: updatedDeal.salespersonName || currentUser.name || 'Tanvir Hossain',
+              last_contact_date: noteObj.date,
+              communication_notes: updatedNotes,
+              status: 'Active',
+            };
+            const { error: upsertErr } = await sb.from('crm_agreements').upsert(payload, { onConflict: 'deal_code' });
+            if (!upsertErr) {
+              isRemoteSynced = true;
+            } else {
+              syncError = upsertErr.message;
+              console.warn('Supabase note upsert notice:', upsertErr.message);
+            }
+          }
+        }
+      } catch (e: any) {
+        syncError = e?.message || 'Database update failed';
         console.warn('Supabase note update notice:', e);
       }
     }
-    return { success: true };
+
+    return { success: true, isRemoteSynced, error: syncError, updatedNotes };
   };
 
   const updateCRMDealStage = async (dealId: string, stage: CRMLeadAgreement['stage']) => {
-    let updatedDeal: CRMLeadAgreement | undefined = undefined;
-    setCrmAgreements((prev) =>
-      prev.map((deal) => {
-        if (deal.id === dealId) {
-          const noteObj = {
-            date: new Date().toISOString().substring(0, 10),
-            author: currentUser.name,
-            note: `Status updated from ${deal.stage} to ${stage}`,
-          };
-          updatedDeal = {
-            ...deal,
-            stage,
-            lastContactDate: noteObj.date,
-            communicationNotes: [...(deal.communicationNotes || []), noteObj],
-          };
-          return updatedDeal;
-        }
-        return deal;
-      })
+    const noteObj = {
+      date: new Date().toISOString().substring(0, 10),
+      author: currentUser.name || 'Admin',
+      note: `Status updated to ${stage}`,
+    };
+
+    const dealCodeStr = String(dealId || '').trim();
+    const currentDeal = crmAgreements.find(
+      (d) =>
+        d.id === dealCodeStr ||
+        d.id?.toLowerCase() === dealCodeStr.toLowerCase() ||
+        String((d as any).deal_code || '').toLowerCase() === dealCodeStr.toLowerCase()
     );
-    addAuditLog('CRM_STAGE_UPDATED', 'CRM & Agreements', `Updated deal stage for agreement ${dealId} to ${stage}`);
+
+    const updatedNotes = currentDeal?.communicationNotes
+      ? [...currentDeal.communicationNotes, noteObj]
+      : [noteObj];
+
+    const updatedDeal: CRMLeadAgreement = currentDeal
+      ? {
+          ...currentDeal,
+          stage,
+          lastContactDate: noteObj.date,
+          communicationNotes: updatedNotes,
+        }
+      : {
+          id: dealCodeStr,
+          clientName: 'Corporate Lead',
+          companyName: dealCodeStr,
+          phone: '+880 1700-000000',
+          stage,
+          expectedVolumeUnits: 100,
+          estimatedValueBDT: 0,
+          dealValueBDT: 0,
+          contractTermMonths: 12,
+          salespersonName: currentUser.name || 'Tanvir Hossain',
+          lastContactDate: noteObj.date,
+          communicationNotes: updatedNotes,
+        };
+
+    setCrmAgreements((prev) => {
+      const matchIdx = prev.findIndex(
+        (d) =>
+          d.id === dealCodeStr ||
+          d.id?.toLowerCase() === dealCodeStr.toLowerCase() ||
+          String((d as any).deal_code || '').toLowerCase() === dealCodeStr.toLowerCase()
+      );
+      const next = matchIdx >= 0
+        ? prev.map((d, idx) => (idx === matchIdx ? updatedDeal : d))
+        : [updatedDeal, ...prev];
+
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('ensec_crm_agreements', JSON.stringify(next));
+        } catch (e) {}
+      }
+      return next;
+    });
+
+    addAuditLog('CRM_STAGE_UPDATED', 'CRM & Agreements', `Updated deal stage for agreement ${dealCodeStr} to ${stage}`);
 
     const sb = getSupabase();
-    if (sb && updatedDeal) {
-      const d: CRMLeadAgreement = updatedDeal;
+    if (sb) {
       try {
-        await sb
+        const { data: matchedDeals, error: updateErr } = await sb
           .from('crm_agreements')
           .update({
             stage,
-            last_contact_date: d.lastContactDate,
-            communication_notes: d.communicationNotes,
+            last_contact_date: noteObj.date,
+            communication_notes: updatedNotes,
             updated_at: new Date().toISOString(),
           })
-          .eq('deal_code', dealId);
+          .ilike('deal_code', dealCodeStr)
+          .select();
+
+        if (updateErr || !matchedDeals || matchedDeals.length === 0) {
+          const numericId = dealCodeStr.replace(/^crm-?/i, '');
+          if (/^\d+$/.test(numericId)) {
+            await sb
+              .from('crm_agreements')
+              .update({
+                stage,
+                last_contact_date: noteObj.date,
+                communication_notes: updatedNotes,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', Number(numericId));
+          }
+        }
       } catch (e) {
         console.warn('Supabase stage update notice:', e);
       }
@@ -5649,14 +5881,39 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteCRMDeal = async (dealId: string) => {
-    const target = crmAgreements.find((d) => d.id === dealId);
-    setCrmAgreements((prev) => prev.filter((d) => d.id !== dealId));
-    addAuditLog('CRM_DEAL_DELETED', 'CRM & Agreements', `Deleted agreement deal: ${target?.clientName || dealId}`);
+    const dealCodeStr = String(dealId || '').trim();
+    const target = crmAgreements.find(
+      (d) =>
+        d.id === dealCodeStr ||
+        d.id?.toLowerCase() === dealCodeStr.toLowerCase() ||
+        String((d as any).deal_code || '').toLowerCase() === dealCodeStr.toLowerCase()
+    );
+    setCrmAgreements((prev) => {
+      const next = prev.filter(
+        (d) =>
+          d.id !== dealCodeStr &&
+          d.id?.toLowerCase() !== dealCodeStr.toLowerCase() &&
+          String((d as any).deal_code || '').toLowerCase() !== dealCodeStr.toLowerCase()
+      );
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('ensec_crm_agreements', JSON.stringify(next));
+        } catch (e) {}
+      }
+      return next;
+    });
+    addAuditLog('CRM_DEAL_DELETED', 'CRM & Agreements', `Deleted agreement deal: ${target?.clientName || dealCodeStr}`);
 
     const sb = getSupabase();
     if (sb) {
       try {
-        await sb.from('crm_agreements').delete().eq('deal_code', dealId);
+        const { data: delData } = await sb.from('crm_agreements').delete().ilike('deal_code', dealCodeStr).select();
+        if (!delData || delData.length === 0) {
+          const numericId = dealCodeStr.replace(/^crm-?/i, '');
+          if (/^\d+$/.test(numericId)) {
+            await sb.from('crm_agreements').delete().eq('id', Number(numericId));
+          }
+        }
       } catch (e) {
         console.warn('Supabase delete deal notice:', e);
       }
@@ -7727,6 +7984,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateCRMDealStage,
         deleteCRMDeal,
         refreshCRMAgreements,
+        clearCRMAgreementsCache,
         syncAllCRMLeadsToSupabase,
         fieldForceReps,
         addFieldForceRep,
